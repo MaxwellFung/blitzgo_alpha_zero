@@ -34,7 +34,7 @@ BOARD_SIZE = 5
 
 # ================= SELF-PLAY =================
 
-N_ITERS = 80                 # ↑ more learning phases
+N_ITERS = 100                # ↑ more learning phases
 N_SELFPLAY_GAMES = 120       # ↑ much more data per iter
 MCTS_SIMS = 400              # ↑ critical for 5x5
 
