@@ -106,7 +106,7 @@ def _selfplay_worker(proc_id, cand_sd, best_sd, size, zob, n_games, out_q, seed)
     best.load_state_dict(best_sd)
 
     samples = selfplay_parallel_collect(cand, best, size, zob, n_games)
-    out_q.put(samples)
+    out_q.put((n_games, samples))
 
 class Board:
     def __init__(self, size: int, zobrist_table: np.ndarray):
@@ -752,8 +752,6 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
     mcts_cand = MCTS(cand)
     mcts_best = MCTS(best)
 
-    pbar = tqdm(total=n_games, desc="SelfPlay", leave=False)
-
     while done < n_games:
         batch_n = min(PARALLEL_GAMES, n_games - done)
         games = [Game(size, zob) for _ in range(batch_n)]
@@ -853,9 +851,7 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                 samples_out.append(Sample(s=s, pi=pi_t, z=z))
 
         done += batch_n
-        pbar.update(batch_n)
 
-    pbar.close()
     return samples_out
 
 
@@ -1055,8 +1051,14 @@ def main():
             procs.append(p)
 
         all_samples = []
+        pbar = tqdm(total=N_SELFPLAY_GAMES, desc="SelfPlay", leave=True)
+
         for _ in range(n_workers):
-            all_samples.extend(out_q.get())
+            ng, samples = out_q.get()   # <-- unpack
+            all_samples.extend(samples)
+            pbar.update(ng)             # <-- advance by actual games
+
+        pbar.close()
 
         for p in procs:
             p.join()
