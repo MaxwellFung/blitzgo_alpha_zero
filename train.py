@@ -1,17 +1,4 @@
-#!/usr/bin/env python3
-# ============================================================
-# AlphaZero-like NN-guided MCTS + self-play training (1 file)
-# FIXED FOR REAL GPU SPEED:
-#   - Removes deepcopy() from self-play/MCTS (fast manual clone)
-#   - Uses NUMPY boards for game logic (CPU-fast), GPU only for NN
-#   - Uses deque BFS (no pop(0))
-#   - Uses Zobrist hashing for duplicate detection (O(1) hash updates)
-#   - Faster state key bytes (ravel + tobytes)
-#   - Larger, more efficient NN batches
-# Notes:
-#   - Your bottleneck was Python + deepcopy + BFS, not NN inference.
-#   - This version makes MCTS much less dominated by copying overhead.
-# ============================================================
+# pip install torch numpy tqdm
 
 import os, math, random, copy
 from dataclasses import dataclass
@@ -1045,7 +1032,7 @@ def main():
         cand.load_state_dict(copy.deepcopy(best.state_dict()))
 
         # ---- multiprocessing self-play ----
-        n_workers = min(os.cpu_count() or 1, 8)
+        n_workers = max(1, (os.cpu_count() or 1) - 1)
         games_per_worker = N_SELFPLAY_GAMES // n_workers
         extras = N_SELFPLAY_GAMES % n_workers
 
