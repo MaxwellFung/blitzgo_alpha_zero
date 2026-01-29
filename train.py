@@ -807,7 +807,13 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                             a2 = int(np.random.choice(legal))
                             pi2 = np.zeros(size * size, dtype=np.float32)
                             pi2[a2] = 1.0
-                            traj[i].append((encode_state(games[i]), torch.from_numpy(pi2).float(), games[i].current_player()))
+
+                            traj[i].append((
+                                encode_state(games[i]).numpy(),
+                                pi2,
+                                games[i].current_player()
+                            ))
+
                             x2, y2 = a2 % size, a2 // size
                             nxt2 = games[i].simulateMove((x2, y2))
                             if nxt2 is None:
@@ -825,7 +831,7 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                     a, pi = sample_action(visits, move_idx)
                     traj[i].append((
                         encode_state(games[i]).numpy(),
-                        pi2.astype(np.float32),
+                        pi.astype(np.float32),
                         games[i].current_player()
                     ))
                     x, y = a % size, a // size
@@ -839,7 +845,11 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                             a2 = int(np.random.choice(legal))
                             pi2 = np.zeros(size * size, dtype=np.float32)
                             pi2[a2] = 1.0
-                            traj[i].append((encode_state(games[i]), torch.from_numpy(pi2).float(), games[i].current_player()))
+                            traj[i].append((
+                                encode_state(games[i]).numpy(),
+                                pi2,
+                                games[i].current_player()
+                            ))
                             x2, y2 = a2 % size, a2 // size
                             nxt2 = games[i].simulateMove((x2, y2))
                             if nxt2 is None:
