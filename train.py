@@ -738,8 +738,8 @@ def sample_action(visits: np.ndarray, move_idx: int) -> Tuple[int, np.ndarray]:
 
 @dataclass
 class Sample:
-    s: torch.Tensor
-    pi: torch.Tensor
+    s: np.ndarray
+    pi: np.ndarray
     z: float
 
 
@@ -791,7 +791,11 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                 visits_list = mcts_cand.run_batched(roots, sims=MCTS_SIMS, add_noise=True)
                 for i, visits in zip(idx_cand, visits_list):
                     a, pi = sample_action(visits, move_idx)
-                    traj[i].append((encode_state(games[i]), torch.from_numpy(pi).float(), games[i].current_player()))
+                    traj[i].append((
+                        encode_state(games[i]).numpy(),   # convert to numpy here
+                        pi.astype(np.float32),
+                        games[i].current_player()
+                    ))
                     x, y = a % size, a // size
                     parent = games[i]
                     nxt = parent.simulateMove((x, y))
@@ -819,7 +823,11 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                 visits_list = mcts_best.run_batched(roots, sims=MCTS_SIMS, add_noise=True)
                 for i, visits in zip(idx_best, visits_list):
                     a, pi = sample_action(visits, move_idx)
-                    traj[i].append((encode_state(games[i]), torch.from_numpy(pi).float(), games[i].current_player()))
+                    traj[i].append((
+                        encode_state(games[i]).numpy(),
+                        pi2.astype(np.float32),
+                        games[i].current_player()
+                    ))
                     x, y = a % size, a // size
                     parent = games[i]
                     nxt = parent.simulateMove((x, y))
@@ -979,8 +987,8 @@ def train_on_buffer(model: AZNet, buf: deque):
         losses = []
         for i in range(0, len(data), BATCH_SIZE):
             batch = data[i : i + BATCH_SIZE]
-            s = torch.stack([b.s for b in batch]).to(DEVICE, non_blocking=True)
-            pi = torch.stack([b.pi for b in batch]).to(DEVICE, non_blocking=True)
+            s = torch.from_numpy(np.stack([b.s for b in batch])).to(DEVICE, non_blocking=True)
+            pi = torch.from_numpy(np.stack([b.pi for b in batch])).to(DEVICE, non_blocking=True)
             z = torch.tensor([b.z for b in batch], dtype=torch.float32, device=DEVICE)
 
             logits, v = model(s)
@@ -1042,7 +1050,7 @@ def main():
         cand_sd = {k: v.cpu() for k, v in cand.state_dict().items()}
         best_sd = {k: v.cpu() for k, v in best.state_dict().items()}
 
-        out_q = mp.Queue()
+        out_q = mp.SimpleQueue()
         procs = []
 
         for i in range(n_workers):
