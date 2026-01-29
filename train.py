@@ -19,9 +19,9 @@ import multiprocessing as mp
 
 BOARD_SIZE = 5
 
-N_ITERS = 200
+N_ITERS = 50
 N_SELFPLAY_GAMES = 400
-MCTS_SIMS = 200
+MCTS_SIMS = 10
 
 C_PUCT = 1.5
 DIRICHLET_ALPHA = 0.3
@@ -105,14 +105,12 @@ def _selfplay_worker(proc_id, cand_sd, best_sd, size, zob, n_games, out_q, seed)
     cand.load_state_dict(cand_sd)
     best.load_state_dict(best_sd)
 
-    all_samples = []
-
     for _ in range(n_games):
         samples = selfplay_parallel_collect(cand, best, size, zob, 1)
-        all_samples.extend(samples)
-        out_q.put(("progress", 1))   # ✅ tell main one game finished
+        out_q.put(("samples", samples))   # ✅ stream samples
+        out_q.put(("progress", 1))        # ✅ progress tick
 
-    out_q.put(("done", all_samples))  # ✅ tell main this worker is done
+    out_q.put(("done", None))             # ✅ no huge payload
 
 class Board:
     def __init__(self, size: int, zobrist_table: np.ndarray):
@@ -1065,13 +1063,13 @@ def main():
             msg, payload = out_q.get()
 
             if msg == "progress":
-                pbar.update(1)
+                pbar.update(payload)
+
+            elif msg == "samples":
+                all_samples.extend(payload)
 
             elif msg == "done":
-                all_samples.extend(payload)
                 done_workers += 1
-
-        pbar.close()
 
         pbar.close()
 
