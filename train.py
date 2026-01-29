@@ -19,9 +19,9 @@ import multiprocessing as mp
 
 BOARD_SIZE = 5
 
-N_ITERS = 50
+N_ITERS = 200
 N_SELFPLAY_GAMES = 400
-MCTS_SIMS = 10
+MCTS_SIMS = 200
 
 C_PUCT = 1.5
 DIRICHLET_ALPHA = 0.3
@@ -738,8 +738,8 @@ def sample_action(visits: np.ndarray, move_idx: int) -> Tuple[int, np.ndarray]:
 
 @dataclass
 class Sample:
-    s: np.ndarray
-    pi: np.ndarray
+    s: torch.Tensor
+    pi: torch.Tensor
     z: float
 
 
@@ -791,7 +791,7 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                 visits_list = mcts_cand.run_batched(roots, sims=MCTS_SIMS, add_noise=True)
                 for i, visits in zip(idx_cand, visits_list):
                     a, pi = sample_action(visits, move_idx)
-                    traj[i].append((encode_state(games[i]).numpy(), pi, games[i].current_player()))
+                    traj[i].append((encode_state(games[i]), torch.from_numpy(pi).float(), games[i].current_player()))
                     x, y = a % size, a // size
                     parent = games[i]
                     nxt = parent.simulateMove((x, y))
@@ -803,7 +803,7 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                             a2 = int(np.random.choice(legal))
                             pi2 = np.zeros(size * size, dtype=np.float32)
                             pi2[a2] = 1.0
-                            traj[i].append((encode_state(games[i]).numpy(), pi2, games[i].current_player()))
+                            traj[i].append((encode_state(games[i]), torch.from_numpy(pi2).float(), games[i].current_player()))
                             x2, y2 = a2 % size, a2 // size
                             nxt2 = games[i].simulateMove((x2, y2))
                             if nxt2 is None:
@@ -979,8 +979,8 @@ def train_on_buffer(model: AZNet, buf: deque):
         losses = []
         for i in range(0, len(data), BATCH_SIZE):
             batch = data[i : i + BATCH_SIZE]
-            s = torch.tensor(np.stack([b.s for b in batch]), device=DEVICE)
-            pi = torch.tensor(np.stack([b.pi for b in batch]), device=DEVICE)
+            s = torch.stack([b.s for b in batch]).to(DEVICE, non_blocking=True)
+            pi = torch.stack([b.pi for b in batch]).to(DEVICE, non_blocking=True)
             z = torch.tensor([b.z for b in batch], dtype=torch.float32, device=DEVICE)
 
             logits, v = model(s)
