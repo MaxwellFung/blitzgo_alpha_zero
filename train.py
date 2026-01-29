@@ -105,8 +105,14 @@ def _selfplay_worker(proc_id, cand_sd, best_sd, size, zob, n_games, out_q, seed)
     cand.load_state_dict(cand_sd)
     best.load_state_dict(best_sd)
 
-    samples = selfplay_parallel_collect(cand, best, size, zob, n_games)
-    out_q.put((n_games, samples))
+    all_samples = []
+
+    for _ in range(n_games):
+        samples = selfplay_parallel_collect(cand, best, size, zob, 1)
+        all_samples.extend(samples)
+        out_q.put(("progress", 1))   # ✅ tell main one game finished
+
+    out_q.put(("done", all_samples))  # ✅ tell main this worker is done
 
 class Board:
     def __init__(self, size: int, zobrist_table: np.ndarray):
