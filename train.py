@@ -17,11 +17,11 @@ import multiprocessing as mp
 
 # ================== ALPHAZERO-LIKE HYPERPARAMETERS ==================
 
-BOARD_SIZE = 5
+BOARD_SIZE = 13
 
 N_ITERS = 200
 N_SELFPLAY_GAMES = 400
-MCTS_SIMS = 200
+MCTS_SIMS = 400
 
 C_PUCT = 1.5
 DIRICHLET_ALPHA = 0.3
