@@ -1,4 +1,7 @@
 # pip install torch numpy tqdm
+# export OMP_NUM_THREADS=1
+# export MKL_NUM_THREADS=1
+# export OPENBLAS_NUM_THREADS=1
 
 import os, math, random, copy
 from dataclasses import dataclass
@@ -44,8 +47,8 @@ CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_NAME = f"az_territory_size{BOARD_SIZE}.pt"
 
 # ---- PARALLELIZATION / BATCHING KNOBS ----
-PARALLEL_GAMES = 5
-PREDICT_BATCH_MAX = 1024          # bigger helps GPU
+PARALLEL_GAMES = 10
+PREDICT_BATCH_MAX = 4096
 MCTS_BATCH_SIMULATIONS = 1
 
 USE_TF32 = True
