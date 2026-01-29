@@ -752,8 +752,6 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
     mcts_cand = MCTS(cand)
     mcts_best = MCTS(best)
 
-    pbar = tqdm(total=n_games, desc="SelfPlay", leave=False)
-
     while done < n_games:
         batch_n = min(PARALLEL_GAMES, n_games - done)
         games = [Game(size, zob) for _ in range(batch_n)]
@@ -853,9 +851,7 @@ def selfplay_parallel_collect(cand: AZNet, best: AZNet, size: int, zob: np.ndarr
                 samples_out.append(Sample(s=s, pi=pi_t, z=z))
 
         done += batch_n
-        pbar.update(batch_n)
 
-    pbar.close()
     return samples_out
 
 
