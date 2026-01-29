@@ -30,31 +30,46 @@ import az_engine  # compiled pybind module
 
 # ================== HYPERPARAMETERS ==================
 
-BOARD_SIZE = 3
+BOARD_SIZE = 5
 
-N_ITERS = 50
-N_SELFPLAY_GAMES = 50
-MCTS_SIMS = 100
+# ================= SELF-PLAY =================
 
-C_PUCT = 1.5
-DIRICHLET_ALPHA = 0.5
-DIRICHLET_EPS = 0.25
+N_ITERS = 100                # ↑ more learning phases
+N_SELFPLAY_GAMES = 120       # ↑ much more data per iter
+MCTS_SIMS = 400              # ↑ critical for 5x5
 
-LEARNING_RATE = 1e-3
+# ================= MCTS =================
+
+C_PUCT = 1.8                 # ↑ larger branching factor
+DIRICHLET_ALPHA = 0.3        # ↓ alpha ∝ 1 / board_area
+DIRICHLET_EPS = 0.25         # same
+
+# ================= OPTIMIZATION =================
+
+LEARNING_RATE = 8e-4         # ↓ slightly for stability
 WEIGHT_DECAY = 1e-4
-BATCH_SIZE = 64
-EPOCHS = 5
-REPLAY_BUFFER_SIZE = 5000
 
-TEMPERATURE_MOVES = 5
+BATCH_SIZE = 128             # ↑ better gradient estimate
+EPOCHS = 8                   # ↑ more fitting per iter
+
+REPLAY_BUFFER_SIZE = 30000   # ↑ MUCH larger buffer
+
+# ================= SAMPLING =================
+
+TEMPERATURE_MOVES = 10       # ↑ longer exploration phase
 TEMPERATURE = 1.0
 
-EVAL_GAMES = 20
+# ================= EVAL =================
+
+EVAL_GAMES = 50              # ↑ reduce variance
 ACCEPT_WINRATE = 0.55
-CHANNELS = 196
+
+# ================= NETWORK =================
+
+CHANNELS = 256               # ↑ more capacity
 
 SEED = 42
-DEVICE = "cpu"  # "cuda" / "mps"
+DEVICE = "cpu"
 
 CHECKPOINT_DIR = "checkpoints"
 CHECKPOINT_NAME = f"az_territory_size{BOARD_SIZE}.pt"
