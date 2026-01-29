@@ -1050,13 +1050,22 @@ def main():
             p.start()
             procs.append(p)
 
+
         all_samples = []
         pbar = tqdm(total=N_SELFPLAY_GAMES, desc="SelfPlay", leave=True)
 
-        for _ in range(n_workers):
-            ng, samples = out_q.get()   # <-- unpack
-            all_samples.extend(samples)
-            pbar.update(ng)             # <-- advance by actual games
+        done_workers = 0
+        while done_workers < n_workers:
+            msg, payload = out_q.get()
+
+            if msg == "progress":
+                pbar.update(1)
+
+            elif msg == "done":
+                all_samples.extend(payload)
+                done_workers += 1
+
+        pbar.close()
 
         pbar.close()
 
