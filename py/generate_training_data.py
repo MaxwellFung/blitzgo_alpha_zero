@@ -85,6 +85,7 @@ def generate_shard(task: tuple) -> dict:
         exploration_top_k,
         sample_probability,
         max_samples_per_game,
+        search_workers,
     ) = task
     started = time.monotonic()
     rng = random.Random(seed)
@@ -106,7 +107,10 @@ def generate_shard(task: tuple) -> dict:
             if game.is_over() or sample_index >= sample_count:
                 break
 
-            labels = teacher.rank_root_moves(game)
+            if search_workers > 1:
+                labels = teacher.rank_root_moves_parallel(game, search_workers)
+            else:
+                labels = teacher.rank_root_moves(game)
             moves = list(labels["moves"])
             scores = list(labels["scores"])
             if not moves:
@@ -181,6 +185,15 @@ def main():
     parser.add_argument("--samples", type=int, default=50_000)
     parser.add_argument("--teacher-states", type=int, default=100_000)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    parser.add_argument(
+        "--search-workers",
+        type=int,
+        default=1,
+        help=(
+            "CPU threads per minimax root search. Use 10 with --workers 1 to "
+            "parallelize each teacher search across a 10-core machine."
+        ),
+    )
     parser.add_argument("--output-dir", default="data/move_ranker_7x7")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--max-game-moves", type=int, default=BOARD_SIZE * BOARD_SIZE * 4)
@@ -193,6 +206,7 @@ def main():
     args = parser.parse_args()
 
     workers = max(1, min(args.workers, args.samples))
+    search_workers = max(1, args.search_workers)
     progress_every = max(1, args.progress_every)
     if not 0.0 <= args.best_probability <= 1.0:
         raise ValueError("--best-probability must be between 0 and 1.")
@@ -214,6 +228,13 @@ def main():
         f"Generating {args.samples:,} positions with {workers} CPU workers "
         f"and {args.teacher_states:,} teacher states per position."
     )
+    print(f"Minimax root search workers per position: {search_workers}.")
+    if workers > 1 and search_workers > 1:
+        print(
+            "Warning: --workers multiplied by --search-workers can oversubscribe "
+            "your CPU. For 10 total cores, prefer --workers 1 --search-workers 10 "
+            "or another product near 10."
+        )
     print(
         "Self-play policy: "
         f"{args.best_probability:.0%} best, "
@@ -241,6 +262,7 @@ def main():
             args.exploration_top_k,
             args.sample_probability,
             args.max_samples_per_game,
+            search_workers,
         )
         for worker_id, sample_count in enumerate(split_samples(args.samples, workers))
     ]

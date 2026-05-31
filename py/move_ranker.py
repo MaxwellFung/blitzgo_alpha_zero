@@ -71,10 +71,36 @@ def encode_game(game) -> np.ndarray:
 
 
 def ranked_moves(model, game) -> list[int]:
+    moves = game.legal_moves_playable() if hasattr(game, "legal_moves_playable") else game.legal_moves_all()
     board = torch.from_numpy(encode_game(game)).unsqueeze(0)
     with torch.no_grad():
         logits = model(board).squeeze(0).cpu().numpy()
-    return sorted(game.legal_moves_all(), key=lambda move: (-float(logits[move]), move))
+    return sorted(moves, key=lambda move: (-float(logits[move]), move))
+
+
+def ranked_move_predictions(model, game, limit: int | None = None) -> list[dict]:
+    moves = game.legal_moves_playable() if hasattr(game, "legal_moves_playable") else game.legal_moves_all()
+    board = torch.from_numpy(encode_game(game)).unsqueeze(0)
+    with torch.no_grad():
+        logits = model(board).squeeze(0)
+
+    move_tensor = torch.tensor(moves, dtype=torch.long)
+    move_logits = logits[move_tensor]
+    probabilities = torch.softmax(move_logits, dim=0).cpu().numpy()
+    logits_np = move_logits.cpu().numpy()
+
+    ranked = sorted(
+        (
+            {
+                "move": move,
+                "logit": float(logit),
+                "probability": float(probability),
+            }
+            for move, logit, probability in zip(moves, logits_np, probabilities)
+        ),
+        key=lambda item: (-item["probability"], item["move"]),
+    )
+    return ranked if limit is None else ranked[:limit]
 
 
 def load_scripted_model(path: str | Path):

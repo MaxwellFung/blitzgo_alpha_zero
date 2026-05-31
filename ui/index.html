@@ -1,337 +1,562 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BlitzGo</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #121212;
-      --panel: #1d1d1f;
-      --line: #5f4a2d;
-      --board: #d6a85f;
-      --text: #f3efe7;
-      --muted: #aaa29a;
-      --accent: #77c7ff;
-    }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      background: radial-gradient(circle at top, #27231d, var(--bg));
-      color: var(--text);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    main {
-      width: min(1000px, calc(100vw - 32px));
-      display: grid;
-      grid-template-columns: minmax(360px, 620px) minmax(260px, 1fr);
-      gap: 24px;
-      align-items: start;
-    }
-    h1 {
-      margin: 0 0 12px;
-      font-size: 34px;
-      letter-spacing: -0.04em;
-    }
-    .panel {
-      background: color-mix(in srgb, var(--panel) 92%, transparent);
-      border: 1px solid #34302b;
-      border-radius: 20px;
-      padding: 18px;
-      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
-    }
-    #board {
-      display: grid;
-      gap: 0;
-      aspect-ratio: 1;
-      width: 100%;
-      background: var(--board);
-      border-radius: 16px;
-      padding: 12px;
-      box-sizing: border-box;
-      border: 2px solid #6f4f25;
-    }
-    .cell {
-      position: relative;
-      border: 0;
-      background: transparent;
-      cursor: pointer;
-      min-width: 0;
-    }
-    .cell::before,
-    .cell::after {
-      content: "";
-      position: absolute;
-      background: var(--line);
-      opacity: 0.75;
-    }
-    .cell::before {
-      left: 50%;
-      top: 0;
-      width: 1px;
-      height: 100%;
-    }
-    .cell::after {
-      top: 50%;
-      left: 0;
-      width: 100%;
-      height: 1px;
-    }
-    .stone {
-      position: absolute;
-      z-index: 2;
-      width: 72%;
-      height: 72%;
-      left: 14%;
-      top: 14%;
-      border-radius: 999px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    }
-    .p1 {
-      background: #111;
-      border: 1px solid #000;
-    }
-    .p2 {
-      background: #f2eadc;
-      border: 1px solid #cfc4b3;
-    }
-    .territory {
-      position: absolute;
-      z-index: 1;
-      width: 28%;
-      height: 28%;
-      left: 36%;
-      top: 36%;
-      border-radius: 999px;
-      opacity: 0.45;
-    }
-    .territory.p1 {
-      background: #111;
-    }
-    .territory.p2 {
-      background: #fff4d8;
-    }
-    .controls {
-      display: grid;
-      gap: 12px;
-    }
-    label {
-      display: grid;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    select, button {
-      font: inherit;
-      border-radius: 12px;
-      border: 1px solid #3b3834;
-      color: var(--text);
-      background: #262421;
-      padding: 10px 12px;
-    }
-    button {
-      cursor: pointer;
-      font-weight: 650;
-    }
-    button.primary {
-      background: linear-gradient(135deg, #2a85ff, #7c4dff);
-      border-color: transparent;
-    }
-    button:disabled {
-      cursor: wait;
-      opacity: 0.6;
-    }
-    .stats {
-      display: grid;
-      gap: 8px;
-      margin: 16px 0;
-      color: var(--muted);
-      line-height: 1.35;
-    }
-    .stats strong {
-      color: var(--text);
-    }
-    #message {
-      color: var(--accent);
-      min-height: 48px;
-      line-height: 1.4;
-    }
-    @media (max-width: 820px) {
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BlitzGo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #121212;
+        --panel: #1d1d1f;
+        --line: #5f4a2d;
+        --board: #d6a85f;
+        --text: #f3efe7;
+        --muted: #aaa29a;
+        --accent: #77c7ff;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: start center;
+        box-sizing: border-box;
+        padding: 32px 0;
+        background: radial-gradient(circle at top, #27231d, var(--bg));
+        color: var(--text);
+        font-family:
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
       main {
-        grid-template-columns: 1fr;
+        width: min(1000px, calc(100vw - 32px));
+        display: grid;
+        grid-template-columns: minmax(360px, 620px) minmax(260px, 1fr);
+        gap: 24px;
+        align-items: start;
       }
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <section class="panel">
-      <div id="board" aria-label="BlitzGo board"></div>
-    </section>
-    <aside class="panel">
-      <h1>BlitzGo</h1>
-      <div class="controls">
-        <label>
-          Mode
-          <select id="mode">
-            <option value="engine">Human vs Engine</option>
-            <option value="pvp">Human vs Human</option>
-          </select>
-        </label>
-        <label>
-          Human side
-          <select id="side">
-            <option value="1">Player 1, black</option>
-            <option value="2">Player 2, white</option>
-          </select>
-        </label>
-        <button class="primary" id="newGame">New Game</button>
-        <button id="engineMove">Engine Move</button>
-      </div>
-      <div class="stats">
-        <div>Turn: <strong id="turn">-</strong></div>
-        <div>Territory: <strong id="score">-</strong></div>
-        <div>Status: <strong id="status">-</strong></div>
-      </div>
-      <div id="message"></div>
-    </aside>
-  </main>
-
-  <script>
-    let state = null;
-    let busy = false;
-
-    const board = document.querySelector("#board");
-    const mode = document.querySelector("#mode");
-    const side = document.querySelector("#side");
-    const newGame = document.querySelector("#newGame");
-    const engineMove = document.querySelector("#engineMove");
-    const turn = document.querySelector("#turn");
-    const score = document.querySelector("#score");
-    const statusEl = document.querySelector("#status");
-    const message = document.querySelector("#message");
-
-    async function api(path, body = null) {
-      const options = body
-        ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-        : {};
-      const response = await fetch(path, options);
-      const text = await response.text();
-      if (!text.trim()) {
-        throw new Error(
-          `Empty response from ${path}. Make sure you opened http://127.0.0.1:8000 and the Python UI server is still running.`
-        );
+      h1 {
+        margin: 0 0 12px;
+        font-size: 34px;
+        letter-spacing: -0.04em;
       }
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (err) {
-        throw new Error(`Expected JSON from ${path}, got: ${text.slice(0, 160)}`);
+      .panel {
+        background: color-mix(in srgb, var(--panel) 92%, transparent);
+        border: 1px solid #34302b;
+        border-radius: 20px;
+        padding: 18px;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
       }
-      if (!response.ok || data.error) throw new Error(data.error || response.statusText);
-      return data;
-    }
-
-    function render(data) {
-      state = data;
-      board.style.gridTemplateColumns = `repeat(${data.size}, 1fr)`;
-      board.innerHTML = "";
-
-      for (let i = 0; i < data.size * data.size; i++) {
-        const cell = document.createElement("button");
-        cell.className = "cell";
-        cell.title = `${i % data.size + 1}, ${Math.floor(i / data.size) + 1}`;
-        cell.addEventListener("click", () => playMove(i));
-
-        if (data.territories[i]) {
-          const territory = document.createElement("span");
-          territory.className = `territory p${data.territories[i]}`;
-          cell.appendChild(territory);
+      #board {
+        display: grid;
+        gap: 0;
+        aspect-ratio: 1;
+        width: 100%;
+        background: var(--board);
+        border-radius: 16px;
+        padding: 12px;
+        box-sizing: border-box;
+        border: 2px solid #6f4f25;
+      }
+      .cell {
+        position: relative;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        min-width: 0;
+      }
+      .cell::before,
+      .cell::after {
+        content: "";
+        position: absolute;
+        background: var(--line);
+        opacity: 0.75;
+      }
+      .cell::before {
+        left: 50%;
+        top: 0;
+        width: 1px;
+        height: 100%;
+      }
+      .cell::after {
+        top: 50%;
+        left: 0;
+        width: 100%;
+        height: 1px;
+      }
+      .stone {
+        position: absolute;
+        z-index: 2;
+        width: 72%;
+        height: 72%;
+        left: 14%;
+        top: 14%;
+        border-radius: 999px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+      }
+      .p1 {
+        background: #111;
+        border: 1px solid #000;
+      }
+      .p2 {
+        background: #f2eadc;
+        border: 1px solid #cfc4b3;
+      }
+      .territory {
+        position: absolute;
+        z-index: 1;
+        width: 28%;
+        height: 28%;
+        left: 36%;
+        top: 36%;
+        border-radius: 999px;
+        opacity: 0.45;
+      }
+      .territory.p1 {
+        background: #111;
+      }
+      .territory.p2 {
+        background: #fff4d8;
+      }
+      .policy-badge {
+        position: absolute;
+        z-index: 3;
+        right: 4px;
+        top: 4px;
+        min-width: 22px;
+        height: 22px;
+        display: grid;
+        place-items: center;
+        border-radius: 999px;
+        background: rgba(20, 24, 28, 0.82);
+        border: 1px solid rgba(255, 255, 255, 0.28);
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 750;
+        line-height: 1;
+        pointer-events: none;
+      }
+      .policy-badge.illegal {
+        background: rgba(126, 45, 45, 0.86);
+      }
+      .policy-badge.chosen {
+        background: rgba(42, 133, 255, 0.9);
+        border-color: rgba(255, 255, 255, 0.72);
+      }
+      .controls {
+        display: grid;
+        gap: 12px;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      select,
+      button {
+        font: inherit;
+        border-radius: 12px;
+        border: 1px solid #3b3834;
+        color: var(--text);
+        background: #262421;
+        padding: 10px 12px;
+      }
+      button {
+        cursor: pointer;
+        font-weight: 650;
+      }
+      button.primary {
+        background: linear-gradient(135deg, #2a85ff, #7c4dff);
+        border-color: transparent;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+      .stats {
+        display: grid;
+        gap: 8px;
+        margin: 16px 0;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .stats strong {
+        color: var(--text);
+      }
+      #message {
+        color: var(--accent);
+        min-height: 48px;
+        line-height: 1.4;
+      }
+      .ranker {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      .ranker + .ranker {
+        margin-top: 18px;
+      }
+      .ranker-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .ranker-list {
+        display: grid;
+        gap: 6px;
+      }
+      .ranker-row {
+        display: grid;
+        grid-template-columns: 32px 54px 1fr 64px;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 6px 8px;
+        border: 1px solid #34302b;
+        border-radius: 8px;
+        background: #24221f;
+        font-size: 13px;
+      }
+      .ranker-row.illegal {
+        opacity: 0.72;
+      }
+      .ranker-row.chosen {
+        border-color: rgba(119, 199, 255, 0.72);
+        background: #202a31;
+      }
+      .ranker-rank {
+        font-weight: 750;
+        color: var(--text);
+      }
+      .ranker-move {
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      .ranker-detail {
+        color: var(--muted);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ranker-prob {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        color: var(--text);
+      }
+      @media (max-width: 820px) {
+        main {
+          grid-template-columns: 1fr;
         }
-        if (data.stones[i]) {
-          const stone = document.createElement("span");
-          stone.className = `stone p${data.stones[i]}`;
-          cell.appendChild(stone);
-        }
-        board.appendChild(cell);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <div id="board" aria-label="BlitzGo board"></div>
+      </section>
+      <aside class="panel">
+        <h1>BlitzGo</h1>
+        <div class="controls">
+          <label>
+            Mode
+            <select id="mode">
+              <option value="engine">Human vs Engine</option>
+              <option value="pvp">Human vs Human</option>
+            </select>
+          </label>
+          <label>
+            Human side
+            <select id="side">
+              <option value="1">Player 1, black</option>
+              <option value="2">Player 2, white</option>
+            </select>
+          </label>
+          <button class="primary" id="newGame">New Game</button>
+          <button id="engineMove">Engine Move</button>
+        </div>
+        <div class="stats">
+          <div>Turn: <strong id="turn">-</strong></div>
+          <div>Territory: <strong id="score">-</strong></div>
+          <div>Status: <strong id="status">-</strong></div>
+        </div>
+        <div id="message"></div>
+        <div class="ranker">
+          <div class="ranker-header">
+            <span>CNN top picks</span>
+            <span id="rankerMeta">-</span>
+          </div>
+          <div class="ranker-list" id="rankerList"></div>
+        </div>
+        <div class="ranker">
+          <div class="ranker-header">
+            <span>Minimax ranking</span>
+            <span id="minimaxMeta">-</span>
+          </div>
+          <div class="ranker-list" id="minimaxList"></div>
+        </div>
+      </aside>
+    </main>
+
+    <script>
+      let state = null;
+      let busy = false;
+
+      const board = document.querySelector("#board");
+      const mode = document.querySelector("#mode");
+      const side = document.querySelector("#side");
+      const newGame = document.querySelector("#newGame");
+      const engineMove = document.querySelector("#engineMove");
+      const turn = document.querySelector("#turn");
+      const score = document.querySelector("#score");
+      const statusEl = document.querySelector("#status");
+      const message = document.querySelector("#message");
+      const rankerMeta = document.querySelector("#rankerMeta");
+      const rankerList = document.querySelector("#rankerList");
+      const minimaxMeta = document.querySelector("#minimaxMeta");
+      const minimaxList = document.querySelector("#minimaxList");
+
+      function currentTopK(data) {
+        return data?.last_engine_info?.cnn_top_k || data?.cnn_top_k || [];
       }
 
-      turn.textContent = `Player ${data.current_player}`;
-      score.textContent = `P1 ${data.score_p1} / P2 ${data.score_p2}`;
-      statusEl.textContent = data.is_over
-        ? (data.winner ? `Player ${data.winner} wins` : "Draw")
-        : data.mode === "engine" ? `Human vs Engine` : "Human vs Human";
-      message.textContent = data.message || "";
-      engineMove.disabled = busy || data.is_over || data.mode !== "engine" || data.current_player === data.human_side;
-    }
+      function currentMinimax(data) {
+        return data?.last_engine_info?.minimax_ranked || [];
+      }
 
-    async function refresh() {
-      render(await api("/api/state"));
-    }
+      function renderTopK(picks) {
+        rankerList.innerHTML = "";
+        rankerMeta.textContent = picks.length ? `${picks.length} ranked` : "-";
+        for (const pick of picks) {
+          const row = document.createElement("div");
+          row.className = `ranker-row${pick.legal ? "" : " illegal"}`;
 
-    async function playMove(move) {
-      if (busy || !state || state.is_over) return;
-      busy = true;
-      render(state);
-      try {
-        render(await api("/api/move", { move }));
-        if (state.mode === "engine" && !state.is_over && state.current_player !== state.human_side) {
+          const rank = document.createElement("span");
+          rank.className = "ranker-rank";
+          rank.textContent = `#${pick.rank}`;
+
+          const move = document.createElement("span");
+          move.className = "ranker-move";
+          move.textContent = `${pick.x},${pick.y}`;
+
+          const detail = document.createElement("span");
+          detail.className = "ranker-detail";
+          detail.textContent = `${pick.legal ? "legal" : "illegal"} · ${pick.reason}`;
+
+          const probability = document.createElement("span");
+          probability.className = "ranker-prob";
+          probability.textContent = `${(pick.probability * 100).toFixed(1)}%`;
+
+          row.append(rank, move, detail, probability);
+          rankerList.appendChild(row);
+        }
+      }
+
+      function renderMinimax(rows) {
+        minimaxList.innerHTML = "";
+        minimaxMeta.textContent = rows.length ? `${rows.length} scored` : "-";
+        for (const item of rows) {
+          const row = document.createElement("div");
+          row.className = `ranker-row${item.chosen ? " chosen" : ""}`;
+
+          const rank = document.createElement("span");
+          rank.className = "ranker-rank";
+          rank.textContent = `#${item.rank}`;
+
+          const move = document.createElement("span");
+          move.className = "ranker-move";
+          move.textContent = `${item.x},${item.y}`;
+
+          const detail = document.createElement("span");
+          detail.className = "ranker-detail";
+          const cnn = item.cnn_rank ? `CNN #${item.cnn_rank}` : "not in CNN top";
+          detail.textContent = `${item.chosen ? "chosen" : "candidate"} · ${cnn}`;
+
+          const score = document.createElement("span");
+          score.className = "ranker-prob";
+          score.textContent = item.score;
+
+          row.append(rank, move, detail, score);
+          minimaxList.appendChild(row);
+        }
+      }
+
+      async function api(path, body = null) {
+        const options = body
+          ? {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            }
+          : {};
+        const response = await fetch(path, options);
+        const text = await response.text();
+        if (!text.trim()) {
+          throw new Error(
+            `Empty response from ${path}. Make sure you opened http://127.0.0.1:8000 and the Python UI server is still running.`,
+          );
+        }
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (err) {
+          throw new Error(
+            `Expected JSON from ${path}, got: ${text.slice(0, 160)}`,
+          );
+        }
+        if (!response.ok || data.error)
+          throw new Error(data.error || response.statusText);
+        return data;
+      }
+
+      function render(data) {
+        state = data;
+        const topK = currentTopK(data);
+        const minimaxRows = currentMinimax(data);
+        const pickByMove = new Map(topK.map((pick) => [pick.move, pick]));
+        const minimaxByMove = new Map(minimaxRows.map((item) => [item.move, item]));
+        board.style.gridTemplateColumns = `repeat(${data.size}, 1fr)`;
+        board.innerHTML = "";
+
+        for (let i = 0; i < data.size * data.size; i++) {
+          const cell = document.createElement("button");
+          cell.className = "cell";
+          const pick = pickByMove.get(i);
+          const minimax = minimaxByMove.get(i);
+          cell.title = `${(i % data.size) + 1}, ${Math.floor(i / data.size) + 1}`;
+          cell.addEventListener("click", () => playMove(i));
+
+          if (data.territories[i]) {
+            const territory = document.createElement("span");
+            territory.className = `territory p${data.territories[i]}`;
+            cell.appendChild(territory);
+          }
+          if (data.stones[i]) {
+            const stone = document.createElement("span");
+            stone.className = `stone p${data.stones[i]}`;
+            cell.appendChild(stone);
+          }
+          if (pick) {
+            const badge = document.createElement("span");
+            badge.className = `policy-badge${pick.legal ? "" : " illegal"}${minimax?.chosen ? " chosen" : ""}`;
+            badge.textContent = pick.rank;
+            cell.appendChild(badge);
+          }
+          board.appendChild(cell);
+        }
+
+        turn.textContent = `Player ${data.current_player}`;
+        score.textContent = `P1 ${data.score_p1} / P2 ${data.score_p2}`;
+        statusEl.textContent = data.is_over
+          ? data.winner
+            ? `Player ${data.winner} wins`
+            : "Draw"
+          : data.mode === "engine"
+            ? `Human vs Engine`
+            : "Human vs Human";
+        message.textContent = data.message || "";
+        renderTopK(topK);
+        renderMinimax(minimaxRows);
+        engineMove.disabled =
+          busy ||
+          data.is_over ||
+          data.mode !== "engine" ||
+          data.current_player === data.human_side;
+      }
+
+      async function previewTopK() {
+        const data = await api("/api/cnn_top_k", {});
+        state = { ...state, cnn_top_k: data.cnn_top_k };
+        render(state);
+      }
+
+      async function refresh() {
+        render(await api("/api/state"));
+      }
+
+      async function playMove(move) {
+        if (busy || !state || state.is_over) return;
+        busy = true;
+        render(state);
+        try {
+          render(await api("/api/move", { move }));
+          if (
+            state.mode === "engine" &&
+            !state.is_over &&
+            state.current_player !== state.human_side
+          ) {
+            message.textContent = "Engine thinking...";
+            await previewTopK();
+            message.textContent = "Engine thinking...";
+            render(await api("/api/engine", {}));
+          }
+        } catch (err) {
+          message.textContent = err.message;
+        } finally {
+          busy = false;
+          render(state);
+        }
+      }
+
+      async function requestEngineMove() {
+        if (busy) return;
+        busy = true;
+        render(state);
+        try {
+          message.textContent = "Engine thinking...";
+          await previewTopK();
           message.textContent = "Engine thinking...";
           render(await api("/api/engine", {}));
+        } catch (err) {
+          message.textContent = err.message;
+        } finally {
+          busy = false;
+          render(state);
         }
-      } catch (err) {
-        message.textContent = err.message;
-      } finally {
-        busy = false;
-        render(state);
       }
-    }
 
-    async function requestEngineMove() {
-      if (busy) return;
-      busy = true;
-      render(state);
-      try {
-        message.textContent = "Engine thinking...";
-        render(await api("/api/engine", {}));
-      } catch (err) {
-        message.textContent = err.message;
-      } finally {
-        busy = false;
-        render(state);
-      }
-    }
-
-    newGame.addEventListener("click", async () => {
-      busy = true;
-      try {
-        render(await api("/api/reset", {
-          mode: mode.value,
-          human_side: Number(side.value),
-        }));
-        if (state.mode === "engine" && state.current_player !== state.human_side) {
-          message.textContent = "Engine thinking...";
-          render(await api("/api/engine", {}));
+      newGame.addEventListener("click", async () => {
+        busy = true;
+        try {
+          render(
+            await api("/api/reset", {
+              mode: mode.value,
+              human_side: Number(side.value),
+            }),
+          );
+          if (
+            state.mode === "engine" &&
+            state.current_player !== state.human_side
+          ) {
+            message.textContent = "Engine thinking...";
+            await previewTopK();
+            message.textContent = "Engine thinking...";
+            render(await api("/api/engine", {}));
+          }
+        } catch (err) {
+          message.textContent = err.message;
+        } finally {
+          busy = false;
+          render(state);
         }
-      } catch (err) {
-        message.textContent = err.message;
-      } finally {
-        busy = false;
-        render(state);
-      }
-    });
-
-    engineMove.addEventListener("click", requestEngineMove);
-    if (location.protocol === "file:") {
-      message.textContent = "Start the server with: python3 py/ui_server.py, then open http://127.0.0.1:8000";
-    } else {
-      refresh().catch((err) => {
-        message.textContent = err.message;
       });
-    }
-  </script>
-</body>
+
+      engineMove.addEventListener("click", requestEngineMove);
+      if (location.protocol === "file:") {
+        message.textContent =
+          "Start the server with: python3 py/ui_server.py, then open http://127.0.0.1:8000";
+      } else {
+        refresh().catch((err) => {
+          message.textContent = err.message;
+        });
+      }
+    </script>
+  </body>
 </html>

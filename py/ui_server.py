@@ -12,12 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import az_engine
-from move_ranker import load_scripted_model, ranked_moves
+from move_ranker import load_scripted_model, ranked_move_predictions
 
 
 BOARD_SIZE = 7
 NUM_STATES_SEARCHED = 10000000
-RANKER_MODEL = "model/move_ranker_7x7.ts"
+RANKER_MODEL = "model/move_ranker.ts"
 TOP_K = 12
 WORKERS = os.cpu_count() or 1
 
@@ -94,6 +94,77 @@ class GameSession:
             self.last_engine_info = None
             return self.state_locked()
 
+    def cnn_top_k_locked(self):
+        predictions = ranked_move_predictions(self.model, self.game, self.top_k)
+        stones = list(self.game.stones())
+        territories = list(self.game.territories())
+        current_player = self.game.current_player()
+        opponent = 2 if current_player == 1 else 1
+        enriched = []
+        for rank, item in enumerate(predictions, start=1):
+            move = int(item["move"])
+            result = self.game.apply(move)
+            legal = result == 0
+            if legal:
+                self.game.undo()
+
+            territory_owner = int(territories[move])
+            if stones[move]:
+                reason = "occupied"
+            elif not territory_owner:
+                reason = "empty"
+            elif territory_owner == current_player:
+                reason = "own territory"
+            elif territory_owner == opponent:
+                reason = "opponent territory"
+            else:
+                reason = f"territory P{territory_owner}"
+
+            enriched.append(
+                {
+                    "rank": rank,
+                    "move": move,
+                    "x": move % self.size + 1,
+                    "y": move // self.size + 1,
+                    "probability": item["probability"],
+                    "logit": item["logit"],
+                    "legal": legal,
+                    "apply_result": result,
+                    "territory_owner": territory_owner,
+                    "reason": reason,
+                }
+            )
+        return enriched
+
+    def cnn_top_k(self):
+        with self.lock:
+            return self.cnn_top_k_locked()
+
+    def minimax_rows(self, search_info: dict, cnn_top_k: list[dict]) -> list[dict]:
+        cnn_by_move = {item["move"]: item for item in cnn_top_k}
+        best_move = int(search_info["best_move"])
+        rows = []
+        for rank, (move, score, searched_states) in enumerate(
+            zip(search_info["moves"], search_info["scores"], search_info["states"]),
+            start=1,
+        ):
+            move = int(move)
+            cnn = cnn_by_move.get(move, {})
+            rows.append(
+                {
+                    "rank": rank,
+                    "move": move,
+                    "x": move % self.size + 1,
+                    "y": move // self.size + 1,
+                    "score": int(score),
+                    "states": int(searched_states),
+                    "chosen": move == best_move,
+                    "cnn_rank": cnn.get("rank"),
+                    "cnn_probability": cnn.get("probability"),
+                }
+            )
+        return rows
+
     def apply_engine_move(self):
         with self.lock:
             if self.mode != "engine":
@@ -107,10 +178,21 @@ class GameSession:
                 return self.state_locked()
 
             search = az_engine.Minimax(max_states=self.states)
-            candidates = ranked_moves(self.model, self.game)[: self.top_k]
-            move = search.best_move_subset_parallel(self.game, candidates, self.workers)
+            cnn_top_k = self.cnn_top_k_locked()
+            candidates = [item["move"] for item in cnn_top_k]
+            search_info = search.best_move_subset_parallel_info(
+                self.game,
+                candidates,
+                self.workers,
+            )
+            move = int(search_info["best_move"])
+            minimax_ranked = self.minimax_rows(search_info, cnn_top_k)
             if move < 0:
                 self.message = "Engine found no legal move."
+                self.last_engine_info = {
+                    "cnn_top_k": cnn_top_k,
+                    "minimax_ranked": minimax_ranked,
+                }
                 return self.state_locked()
 
             result = self.game.apply(move)
@@ -123,8 +205,10 @@ class GameSession:
                 "x": move % self.size + 1,
                 "y": move // self.size + 1,
                 "kept": len(candidates),
-                "states": search.states_searched(),
-                "completed_depth": search.completed_depth(),
+                "states": int(search_info["states_searched"]),
+                "completed_depth": int(search_info["completed_depth"]),
+                "cnn_top_k": cnn_top_k,
+                "minimax_ranked": minimax_ranked,
             }
             info = self.last_engine_info
             self.message = (
@@ -179,6 +263,8 @@ def make_handler(session: GameSession, ui_dir: Path):
                     )
                 elif path == "/api/move":
                     data = session.apply_human_move(int(payload["move"]))
+                elif path == "/api/cnn_top_k":
+                    data = {"cnn_top_k": session.cnn_top_k()}
                 elif path == "/api/engine":
                     data = session.apply_engine_move()
                 else:
@@ -197,7 +283,7 @@ def make_handler(session: GameSession, ui_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description="Run the BlitzGo browser UI.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--board-size", type=int, default=BOARD_SIZE)
     parser.add_argument("--states", type=int, default=NUM_STATES_SEARCHED)
     parser.add_argument("--ranker", default=RANKER_MODEL)
