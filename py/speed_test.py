@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import time
 import random
-import numpy as np
 from tqdm import tqdm
 import az_engine  # The compiled C++ pybind module
 
 # ================= CONFIGURATION =================
-BOARD_SIZE = 13       # Set this to match your training size
+BOARD_SIZE = 7
 N_GAMES = 10000      # Number of games to simulate
 SEED = 42
 # =================================================
@@ -33,8 +32,6 @@ def run_random_game(size: int):
 
 def benchmark():
     random.seed(SEED)
-    np.random.seed(SEED)
-
     print(f"Starting benchmark: {N_GAMES} games on {BOARD_SIZE}x{BOARD_SIZE} board...")
     
     start_time = time.time()

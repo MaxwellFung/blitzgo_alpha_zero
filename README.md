@@ -1,1 +1,0 @@
-# blitzvision_maxwell

@@ -4,25 +4,22 @@
 // 2) Game over must require totalTerr >= n2 AND stability checkGameOver().
 // 3) If you play inside your OWN territory, that territory cell is cleared + count decremented (Python update_territories early-return).
 // 4) removeSingleTerritory(pos): if you place a stone onto opponent territory, decrement opponent territory count (no terr-cell clear), like Python.
-// 5) legal_moves_top20 uses 8-neighborhood like Python generateValidMoves().
 //
 // Notes:
 // - The core move legality, duplicate-state rejection, enclosure BFS, captures, and opponent-territory BFS clear are preserved.
 // - The order matches Python: place stone -> duplicate test -> update_other_stones -> append move_history.
 
 #include <pybind11/pybind11.h>
-#include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include <pybind11/gil.h>
-#include <pybind11/functional.h>
 
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 #include <algorithm>
-#include <random>
 #include <cstdint>
 #include <array>
-#include <cmath>
+#include <future>
+#include <limits>
 
 namespace py = pybind11;
 using namespace std;
@@ -356,38 +353,41 @@ struct Board {
             touchStamp=1;
         }
 
-        // Python isValidMove: must be empty
         if(stones[pos]!=0) return 1;
 
-        // Place stone
+        uint8_t prevTerr = terr[pos];  // remember territory owner
+
+        // --- place stone ---
         setStoneTracked(u,pos,player);
 
-        // Python update_other_stones begins with incrementTerritory(player, 1)
-        // So we do it immediately after placement.
+        if (terr[pos] != 0) {
+            uint8_t t = terr[pos];
+            incTerr(t, -1);
+            setTerrTracked(u, pos, 0);
+        }
+
         incTerr(player, +1);
 
-        // Python duplicate move check happens after placing stone and before updates.
+        // superko
         if(hashSet.count(hash)){
-            // revert everything
-            for(auto&p:u.stonePrev) stones[p.first]=p.second;
-            hash=u.prevHash;
-            terrCount[1]=u.prevTerrCount1;
-            terrCount[2]=u.prevTerrCount2;
-            totalTerr=u.prevTotalTerr;
-            for(auto&p:u.terrPrev) terr[p.first]=p.second;
-            moveHist.resize(u.prevMoveHistSize);
+            undoMoveTracked(u);
             return 2;
         }
 
-        // record this position in superko set
         hashSet.insert(hash);
         u.addedHash=true;
         u.addedHashValue=hash;
 
-        // update_other_stones
-        update_after_move(u,player,pos);
+        // 🔥 capture logic happens ONCE
+        bool captured = update_after_move(u,player,pos);
 
-        // Python: move_history append happens at end of placeStone()
+        // 🚫 NEW RULE (O(1))
+        if (prevTerr != 0 && prevTerr != player && !captured) {
+            // illegal move: undo everything
+            undoMoveTracked(u);
+            return 3;
+        }
+
         moveHist.push_back(pos);
         return 0;
     }
@@ -487,6 +487,7 @@ struct PyGame {
 
     PyGame(int size):g(size){ undoStack.reserve(size*size*4); }
 
+
     int size()const{return g.board.n;}
     int n2()const{return g.board.n2;}
     int turn()const{return g.turn;}
@@ -494,7 +495,12 @@ struct PyGame {
     bool is_over()const{return g.over();}
     int winner()const{return g.winner();}
 
+    int score_p1() const { return g.board.terrCount[1]; }
+    int score_p2() const { return g.board.terrCount[2]; }
+    int total_territory() const { return g.board.totalTerr; }
+
     int apply(int mv){
+        if(mv < 0 || mv >= g.board.n2) return 4;
         undoStack.emplace_back();
         auto &u=undoStack.back();
         int r=g.apply(u,mv);
@@ -510,7 +516,11 @@ struct PyGame {
 
     vector<int> legal_moves_all() const{
         vector<int> m;
-        for(int i=0;i<g.board.n2;i++) if(g.board.stones[i]==0) m.push_back(i);
+        m.reserve(g.board.n2);
+        for(int i=0;i<g.board.n2;i++){
+            if(g.board.stones[i]==0)
+                m.push_back(i);
+        }
         return m;
     }
 
@@ -519,292 +529,547 @@ struct PyGame {
         return g.board.hash;
     }
 
-    // Python generateValidMoves(): top moves adjacent to existing stones, scored by 8-direction adjacency, top 20.
-    vector<int> legal_moves_top20() const {
-        const Board &b = g.board;
-        vector<int> score(b.n2, 0);
-
-        // 8 directions in flattened indexing (need x/y checks)
-        static const int dx8[8] = {-1,0,1,-1,1,-1,0,1};
-        static const int dy8[8] = {-1,-1,-1,0,0,1,1,1};
-
-        for (int id = 0; id < b.n2; id++) if (b.stones[id]) {
-            int x = id % b.n, y = id / b.n;
-            for (int k=0;k<8;k++){
-                int nx=x+dx8[k], ny=y+dy8[k];
-                if((unsigned)nx<(unsigned)b.n && (unsigned)ny<(unsigned)b.n){
-                    int nid = ny*b.n + nx;
-                    if(b.stones[nid]==0) score[nid] += 1;
-                }
-            }
-        }
-
-        vector<pair<int,int>> cand;
-        cand.reserve(b.n2);
-        for (int i = 0; i < b.n2; i++)
-            if (b.stones[i] == 0 && score[i] > 0)
-                cand.push_back({-score[i], i});
-
-        sort(cand.begin(), cand.end());
-
-        vector<int> out;
-        for (int i = 0; i < (int)cand.size() && i < 20; i++)
-            out.push_back(cand[i].second);
-
-        // if no adjacent moves, fallback to first 20 empties
-        if (out.empty()) {
-            for (int i = 0; i < b.n2 && (int)out.size() < 20; i++)
-                if (b.stones[i] == 0) out.push_back(i);
-        }
-
-        return out;
+    vector<uint8_t> stones() const {
+        return g.board.stones;
     }
 
-    py::array_t<uint8_t> state_tensor() const{
-        int N=g.board.n;
-        py::array_t<uint8_t> out({5,N,N});
-        auto r=out.mutable_data();
-        int S=N*N;
-        for(int i=0;i<S;i++){
-            r[i]=g.board.stones[i]==1;
-            r[S+i]=g.board.stones[i]==2;
-            r[2*S+i]=g.board.terr[i]==1;
-            r[3*S+i]=g.board.terr[i]==2;
-            r[4*S+i]=(g.player()==1);
-        }
-        return out;
+    vector<uint8_t> territories() const {
+        return g.board.terr;
     }
+
 };
 
+// ============================================================
+// ALPHA-BETA MINIMAX
+// ============================================================
 
-// =========================
-// AlphaZero-style MCTS
-// =========================
-struct MCTS {
-    struct Node {
-        int parent = -1;
-        int parent_move = -1;
+struct Minimax {
+    uint64_t maxStates;
+    uint64_t statesSearched = 0;
+    int completedDepth = 0;
 
-        float prior = 0.0f;
-        float value_sum = 0.0f;
-        int visits = 0;
-
-        bool expanded = false;
-        bool terminal = false;
-        int winner = 0; // 0 none/tie, 1/2
-
-        vector<int> moves;
-        vector<int> child;
+    enum Bound : uint8_t {
+        EXACT = 0,
+        LOWER = 1,
+        UPPER = 2,
     };
 
-    float cpuct = 1.5f;
-    float dir_alpha = 0.3f;
-    float dir_eps = 0.25f;
-    int n_sims = 200;
+    struct TTEntry {
+        int depth = -1;
+        int value = 0;
+        int bestMove = -1;
+        Bound bound = EXACT;
+    };
 
-    mt19937_64 rng;
-    vector<Node> nodes;
+    unordered_map<uint64_t, TTEntry> table;
 
-    explicit MCTS(float cpuct_=1.5f, int n_sims_=200, float dir_alpha_=0.3f, float dir_eps_=0.25f, uint64_t seed=12345)
-        : cpuct(cpuct_), dir_alpha(dir_alpha_), dir_eps(dir_eps_), n_sims(n_sims_), rng(seed) {}
-
-    void reset_tree() { nodes.clear(); }
-
-    using EvalFn = std::function<std::pair<py::array, float>(py::array)>;
-
-    int new_node(int parent=-1, int parent_move=-1, float prior=0.0f) {
-        nodes.push_back(Node{});
-        int id = (int)nodes.size()-1;
-        nodes[id].parent = parent;
-        nodes[id].parent_move = parent_move;
-        nodes[id].prior = prior;
-        return id;
+    explicit Minimax(uint64_t maxStates_=1000000)
+        : maxStates(max<uint64_t>(1, maxStates_)) {
+        table.reserve(1 << 16);
     }
 
-    int select_child_ucb(int nid) {
-        Node &n = nodes[nid];
-        float best = -1e30f;
-        int best_i = -1;
-        float sqrt_vis = std::sqrt((float)std::max(1, n.visits));
-
-        for (int i=0;i<(int)n.child.size();i++){
-            int cid = n.child[i];
-            Node &c = nodes[cid];
-
-            float q = (c.visits==0) ? 0.0f : (c.value_sum / (float)c.visits);
-            float u = cpuct * c.prior * (sqrt_vis / (1.0f + (float)c.visits));
-            float score = q + u;
-
-            if (score > best) { best = score; best_i = i; }
+    uint64_t position_key(const PyGame &game) const {
+        const Board &b = game.g.board;
+        uint64_t key = b.hash ^ (uint64_t)(game.g.turn + 1) * 0x9e3779b97f4a7c15ULL;
+        for(int i = 0; i < b.n2; i++) {
+            key ^= (uint64_t)(b.terr[i] + 1) * (0xbf58476d1ce4e5b9ULL + (uint64_t)i);
+            key = (key << 7) | (key >> 57);
         }
-        return best_i;
+        return key;
     }
 
-    void expand_node(int nid, const vector<int> &legal_moves,
-                     const vector<float> &priors, bool add_dirichlet) {
-        Node &n = nodes[nid];
-        n.expanded = true;
+    int evaluate(const PyGame &game, int rootPlayer) const {
+        const Board &b = game.g.board;
+        int opponent = rootPlayer == 1 ? 2 : 1;
+        int value = 0;
 
-        n.moves.clear();
-        n.child.clear();
-        n.moves.reserve(legal_moves.size());
-        n.child.reserve(legal_moves.size());
+        value += 100 * (b.terrCount[rootPlayer] - b.terrCount[opponent]);
 
-        vector<float> p;
-        p.reserve(legal_moves.size());
+        int rootStones = 0;
+        int opponentStones = 0;
+        int rootAdjEmpty = 0;
+        int opponentAdjEmpty = 0;
+        int rootInfluence = 0;
+        int opponentInfluence = 0;
+        int center = b.n / 2;
 
-        float sum = 0.0f;
-        for (int mv : legal_moves) {
-            float pr = (mv >= 0 && mv < (int)priors.size()) ? priors[mv] : 0.0f;
-            pr = std::max(0.0f, pr);
-            p.push_back(pr);
-            sum += pr;
-        }
+        for(int id = 0; id < b.n2; id++) {
+            uint8_t stone = b.stones[id];
+            if(!stone) continue;
 
-        if (sum <= 1e-12f) {
-            float uni = 1.0f / std::max(1, (int)legal_moves.size());
-            for (auto &x : p) x = uni;
-        } else {
-            for (auto &x : p) x /= sum;
-        }
+            int x = id % b.n;
+            int y = id / b.n;
+            int centerBonus = b.n - (abs(x - center) + abs(y - center));
 
-        if (add_dirichlet && !legal_moves.empty()) {
-            std::gamma_distribution<float> gamma(dir_alpha, 1.0f);
-            vector<float> noise(legal_moves.size());
-            float ns = 0.0f;
-            for (size_t i=0;i<noise.size();i++){ noise[i]=gamma(rng); ns += noise[i]; }
-            if (ns > 1e-12f) for (auto &x: noise) x /= ns;
+            int adjEmpty = 0;
+            for(int k = 0; k < 4; k++) {
+                int nid = b.neigh4[id][k];
+                if(nid >= 0 && b.stones[nid] == 0) adjEmpty++;
+            }
 
-            for (size_t i=0;i<p.size();i++){
-                p[i] = (1.0f - dir_eps)*p[i] + dir_eps*noise[i];
+            if(stone == rootPlayer) {
+                rootStones++;
+                rootAdjEmpty += adjEmpty;
+                rootInfluence += centerBonus;
+            } else if(stone == opponent) {
+                opponentStones++;
+                opponentAdjEmpty += adjEmpty;
+                opponentInfluence += centerBonus;
             }
         }
 
-        for (size_t i=0;i<legal_moves.size();i++){
-            int mv = legal_moves[i];
-            int cid = new_node(nid, mv, p[i]);
-            n.moves.push_back(mv);
-            n.child.push_back(cid);
-        }
+        value += 8 * (rootStones - opponentStones);
+        value += 3 * (rootAdjEmpty - opponentAdjEmpty);
+        value += 2 * (rootInfluence - opponentInfluence);
+        return value;
     }
 
-    void backup(int nid, float value_from_current_player) {
-        float v = value_from_current_player;
-        int cur = nid;
-        while (cur != -1) {
-            Node &n = nodes[cur];
-            n.visits += 1;
-            n.value_sum += v;
-            v = -v;
-            cur = n.parent;
+    int score_move(const PyGame &game, int move, int ttMove) const {
+        if(move == ttMove) return numeric_limits<int>::max() / 4;
+
+        const Board &b = game.g.board;
+        int player = game.current_player();
+        int opponent = player == 1 ? 2 : 1;
+        int score = 0;
+
+        if(move < 0 || move >= b.n2 || b.stones[move] != 0) return numeric_limits<int>::min();
+
+        uint8_t targetTerr = b.terr[move];
+        if(targetTerr == opponent) score += 600;
+        else if(targetTerr == player) score += 120;
+
+        int friendAdj = 0;
+        int opponentAdj = 0;
+        int emptyAdj = 0;
+        for(int k = 0; k < 4; k++) {
+            int nid = b.neigh4[move][k];
+            if(nid < 0) continue;
+            if(b.stones[nid] == player) friendAdj++;
+            else if(b.stones[nid] == opponent) opponentAdj++;
+            else emptyAdj++;
         }
+
+        score += 90 * opponentAdj;
+        score += 45 * friendAdj;
+        score += 8 * emptyAdj;
+
+        if(!b.moveHist.empty()) {
+            int last = b.moveHist.back();
+            int lx = last % b.n, ly = last / b.n;
+            int x = move % b.n, y = move / b.n;
+            int dist = abs(x - lx) + abs(y - ly);
+            score += max(0, 6 - dist) * 25;
+        }
+
+        int center = b.n / 2;
+        int x = move % b.n, y = move / b.n;
+        score += b.n - (abs(x - center) + abs(y - center));
+        return score;
     }
 
-    pair<vector<float>, int> run(PyGame &game, const EvalFn &eval_fn) {
-        reset_tree();
-        nodes.reserve(n_sims * 2 + 5);
-        int root = new_node(-1, -1, 1.0f);
+    vector<int> ordered_moves(PyGame &game, int ttMove) const {
+        vector<int> moves = game.legal_moves_all();
+        stable_sort(moves.begin(), moves.end(), [&](int a, int b) {
+            int sa = score_move(game, a, ttMove);
+            int sb = score_move(game, b, ttMove);
+            if(sa != sb) return sa > sb;
+            return a < b;
+        });
+        return moves;
+    }
 
-        // Expand root
-        {
-            if (game.is_over()) {
-                nodes[root].terminal = true;
-                nodes[root].winner = game.winner();
+    bool search(PyGame &game, int depth, int alpha, int beta,
+                int rootPlayer, int &value) {
+        if(statesSearched >= maxStates) return false;
+        statesSearched++;
+
+        int alphaOriginal = alpha;
+        int betaOriginal = beta;
+        uint64_t key = position_key(game);
+        int ttMove = -1;
+
+        auto found = table.find(key);
+        if(found != table.end()) {
+            const TTEntry &entry = found->second;
+            ttMove = entry.bestMove;
+            if(entry.depth >= depth) {
+                if(entry.bound == EXACT) {
+                    value = entry.value;
+                    return true;
+                }
+                if(entry.bound == LOWER) alpha = max(alpha, entry.value);
+                else if(entry.bound == UPPER) beta = min(beta, entry.value);
+                if(alpha >= beta) {
+                    value = entry.value;
+                    return true;
+                }
+            }
+        }
+
+        if(depth == 0 || game.is_over()) {
+            value = evaluate(game, rootPlayer);
+            table[key] = {depth, value, -1, EXACT};
+            return true;
+        }
+
+        bool maximizing = game.current_player() == rootPlayer;
+        int best = maximizing ? numeric_limits<int>::min()
+                              : numeric_limits<int>::max();
+        bool foundMove = false;
+        int bestMove = -1;
+
+        for(int move : ordered_moves(game, ttMove)) {
+            if(game.apply(move) != 0) continue;
+            foundMove = true;
+
+            int childValue = 0;
+            bool completed = search(game, depth - 1, alpha, beta,
+                                    rootPlayer, childValue);
+            game.undo();
+            if(!completed) return false;
+
+            if(maximizing) {
+                if(childValue > best) {
+                    best = childValue;
+                    bestMove = move;
+                }
+                alpha = max(alpha, best);
             } else {
-                py::gil_scoped_acquire gil;
-                py::array st = game.state_tensor();
-                auto [py_priors, v] = eval_fn(st);
-
-                auto buf = py_priors.request();
-                float *ptr = (float*)buf.ptr;
-                vector<float> priors(game.n2(), 0.0f);
-                for (int i = 0; i < game.n2(); i++) priors[i] = ptr[i];
-
-                auto legal = game.legal_moves_all();
-                expand_node(root, legal, priors, true);
-                nodes[root].visits = 1;
-                nodes[root].value_sum = v;
+                if(childValue < best) {
+                    best = childValue;
+                    bestMove = move;
+                }
+                beta = min(beta, best);
             }
+
+            if(beta <= alpha) break;
         }
 
-        for (int sim = 0; sim < n_sims; sim++) {
-            int nid = root;
-            int applied = 0;
+        value = foundMove ? best : evaluate(game, rootPlayer);
+        Bound bound = EXACT;
+        if(value <= alphaOriginal) bound = UPPER;
+        else if(value >= betaOriginal) bound = LOWER;
+        table[key] = {depth, value, bestMove, bound};
+        return true;
+    }
 
-            while (nodes[nid].expanded && !nodes[nid].terminal) {
-                int ci = select_child_ucb(nid);
-                if (ci < 0) break;
+    bool bestMoveAtDepth(PyGame &game, int depth, int &bestMove) {
+        return bestMoveAtDepth(game, depth, game.legal_moves_all(), bestMove);
+    }
 
-                int child = nodes[nid].child[ci];
-                int mv = nodes[child].parent_move;
+    vector<int> orderedRootMoves(PyGame &game, const vector<int> &preferred) {
+        vector<int> moves;
+        vector<uint8_t> seen(game.n2(), 0);
+        moves.reserve(game.n2());
 
-                int r = game.apply(mv);
-                if (r != 0) {
-                    nodes[child].terminal = true;
-                    break;
+        for(int move : preferred) {
+            if(move < 0 || move >= game.n2() || seen[move]) continue;
+            seen[move] = 1;
+            moves.push_back(move);
+        }
+        for(int move : game.legal_moves_all()) {
+            if(seen[move]) continue;
+            seen[move] = 1;
+            moves.push_back(move);
+        }
+        return moves;
+    }
+
+    vector<int> withMoveFirst(const vector<int> &moves, int firstMove) const {
+        if(firstMove < 0) return moves;
+        vector<int> ordered;
+        ordered.reserve(moves.size());
+        ordered.push_back(firstMove);
+        for(int move : moves) {
+            if(move != firstMove) ordered.push_back(move);
+        }
+        return ordered;
+    }
+
+    bool bestMoveAtDepth(PyGame &game, int depth, const vector<int> &rootMoves,
+                         int &bestMove) {
+        int rootPlayer = game.current_player();
+        int bestValue = numeric_limits<int>::min();
+        int alpha = numeric_limits<int>::min();
+        int beta = numeric_limits<int>::max();
+        bestMove = -1;
+
+        for(int move : rootMoves) {
+            if(game.apply(move) != 0) continue;
+
+            int value = 0;
+            bool completed = search(game, depth - 1, alpha, beta,
+                                    rootPlayer, value);
+            game.undo();
+            if(!completed) return false;
+
+            if(bestMove == -1 || value > bestValue) {
+                bestValue = value;
+                bestMove = move;
+            }
+            alpha = max(alpha, bestValue);
+        }
+
+        return true;
+    }
+
+    int best_move_ordered(PyGame &game, const vector<int> &preferred) {
+        statesSearched = 0;
+        completedDepth = 0;
+        int bestMove = -1;
+        vector<int> rootMoves = orderedRootMoves(game, preferred);
+
+        for(int depth = 1; statesSearched < maxStates; depth++) {
+            int candidate = -1;
+            vector<int> depthRootMoves = withMoveFirst(rootMoves, bestMove);
+            if(!bestMoveAtDepth(game, depth, depthRootMoves, candidate)) break;
+            if(candidate < 0) break;
+            bestMove = candidate;
+            completedDepth = depth;
+        }
+
+        if(bestMove >= 0) return bestMove;
+
+        for(int move : game.legal_moves_all()) {
+            if(game.apply(move) == 0) {
+                game.undo();
+                return move;
+            }
+        }
+        return -1;
+    }
+
+    int best_move_subset(PyGame &game, const vector<int> &rootMoves) {
+        statesSearched = 0;
+        completedDepth = 0;
+        int bestMove = -1;
+
+        for(int depth = 1; statesSearched < maxStates; depth++) {
+            int candidate = -1;
+            vector<int> depthRootMoves = withMoveFirst(rootMoves, bestMove);
+            if(!bestMoveAtDepth(game, depth, depthRootMoves, candidate)) break;
+            if(candidate < 0) break;
+            bestMove = candidate;
+            completedDepth = depth;
+        }
+
+        if(bestMove >= 0) return bestMove;
+
+        for(int move : rootMoves) {
+            if(game.apply(move) == 0) {
+                game.undo();
+                return move;
+            }
+        }
+        return -1;
+    }
+
+    int best_move_subset_parallel(PyGame &game, const vector<int> &rootMoves,
+                                  int workers) {
+        statesSearched = 0;
+        completedDepth = 0;
+        int bestMove = -1;
+
+        vector<int> legalRootMoves;
+        vector<uint8_t> seen(game.n2(), 0);
+        legalRootMoves.reserve(rootMoves.size());
+        for(int move : rootMoves) {
+            if(move < 0 || move >= game.n2() || seen[move]) continue;
+            PyGame copy = game;
+            if(copy.apply(move) != 0) continue;
+            seen[move] = 1;
+            legalRootMoves.push_back(move);
+        }
+        if(legalRootMoves.empty()) return -1;
+
+        workers = max(1, min(workers, (int)legalRootMoves.size()));
+
+        struct RootResult {
+            int move = -1;
+            int value = numeric_limits<int>::min();
+            uint64_t states = 0;
+            bool completed = false;
+        };
+
+        int rootPlayer = game.current_player();
+        for(int depth = 1; statesSearched < maxStates; depth++) {
+            vector<int> depthRootMoves = withMoveFirst(legalRootMoves, bestMove);
+            uint64_t remaining = maxStates - statesSearched;
+            uint64_t perMoveBudget = max<uint64_t>(
+                1,
+                remaining / (uint64_t)depthRootMoves.size()
+            );
+
+            vector<RootResult> results;
+            results.reserve(depthRootMoves.size());
+            uint64_t depthStates = 0;
+            bool completedDepthThisRound = true;
+            int sharedAlpha = numeric_limits<int>::min();
+
+            RootResult firstResult;
+            firstResult.move = depthRootMoves.front();
+            {
+                PyGame copy = game;
+                if(copy.apply(firstResult.move) != 0) {
+                    firstResult.completed = false;
+                } else {
+                    Minimax firstSearch(perMoveBudget);
+                    int value = 0;
+                    bool completed = firstSearch.search(
+                        copy,
+                        depth - 1,
+                        numeric_limits<int>::min(),
+                        numeric_limits<int>::max(),
+                        rootPlayer,
+                        value
+                    );
+                    firstResult.value = value;
+                    firstResult.states = firstSearch.statesSearched;
+                    firstResult.completed = completed;
+                }
+            }
+            depthStates += firstResult.states;
+            completedDepthThisRound = firstResult.completed;
+            if(firstResult.completed) {
+                sharedAlpha = firstResult.value;
+            }
+            results.push_back(firstResult);
+
+            for(size_t start = 1; start < depthRootMoves.size();
+                start += (size_t)workers) {
+                vector<future<RootResult>> futures;
+                size_t end = min(depthRootMoves.size(), start + (size_t)workers);
+                futures.reserve(end - start);
+
+                for(size_t i = start; i < end; i++) {
+                    int move = depthRootMoves[i];
+                    futures.push_back(async(
+                        launch::async,
+                        [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha]() {
+                            RootResult result;
+                            result.move = move;
+
+                            PyGame copy = game;
+                            if(copy.apply(move) != 0) {
+                                result.completed = false;
+                                return result;
+                            }
+
+                            Minimax localSearch(perMoveBudget);
+                            int value = 0;
+                            bool completed = localSearch.search(
+                                copy,
+                                depth - 1,
+                                sharedAlpha,
+                                numeric_limits<int>::max(),
+                                rootPlayer,
+                                value
+                            );
+
+                            result.value = value;
+                            result.states = localSearch.statesSearched;
+                            result.completed = completed;
+                            return result;
+                        }
+                    ));
                 }
 
-                nid = child;
-                applied++;
+                for(auto &future : futures) {
+                    RootResult result = future.get();
+                    depthStates += result.states;
+                    if(!result.completed) completedDepthThisRound = false;
+                    results.push_back(result);
+                }
             }
 
-            float leaf_value = 0.0f;
+            if(depthStates == 0) {
+                break;
+            }
+            if(!completedDepthThisRound || statesSearched + depthStates > maxStates) {
+                statesSearched = min(maxStates, statesSearched + depthStates);
+                break;
+            }
+            statesSearched += depthStates;
 
-            if (game.is_over()) {
-                int w = game.winner();
-                int stm = game.current_player();
-
-                if (w == 0) leaf_value = 0.0f;
-                else if (w == stm) leaf_value = -1.0f;
-                else leaf_value = 1.0f;
-
-                nodes[nid].terminal = true;
-                nodes[nid].winner = w;
-            } else {
-                py::gil_scoped_acquire gil;
-                py::array st = game.state_tensor();
-                auto [py_priors, v] = eval_fn(st);
-
-                auto buf = py_priors.request();
-                float *ptr = (float*)buf.ptr;
-
-                vector<float> priors(game.n2(), 0.0f);
-                for (int i = 0; i < game.n2(); i++) priors[i] = ptr[i];
-
-                auto legal = game.legal_moves_all();
-                expand_node(nid, legal, priors, false);
-
-                leaf_value = v;
+            int bestValue = numeric_limits<int>::min();
+            int candidate = -1;
+            for(const RootResult &result : results) {
+                if(result.move < 0) continue;
+                if(candidate == -1 || result.value > bestValue) {
+                    bestValue = result.value;
+                    candidate = result.move;
+                }
             }
 
-            backup(nid, leaf_value);
-
-            for (int i = 0; i < applied; i++) game.undo();
+            if(candidate < 0) break;
+            bestMove = candidate;
+            completedDepth = depth;
         }
 
-        vector<float> policy(game.n2(), 0.0f);
-        int best_move = -1;
-        int best_visits = -1;
+        if(bestMove >= 0) return bestMove;
+        return legalRootMoves.front();
+    }
 
-        Node &r = nodes[root];
-        for (size_t i = 0; i < r.child.size(); i++) {
-            int cid = r.child[i];
-            int mv = r.moves[i];
-            int v = nodes[cid].visits;
-            policy[mv] = (float)v;
-            if (v > best_visits) {
-                best_visits = v;
-                best_move = mv;
-            }
+    int best_move(PyGame &game) {
+        return best_move_ordered(game, {});
+    }
+
+    bool rootScoresAtDepth(PyGame &game, int depth, vector<int> &moves,
+                           vector<int> &scores) {
+        int rootPlayer = game.current_player();
+        moves.clear();
+        scores.clear();
+
+        for(int move : game.legal_moves_all()) {
+            if(game.apply(move) != 0) continue;
+
+            int value = 0;
+            bool completed = search(game, depth - 1,
+                                    numeric_limits<int>::min(),
+                                    numeric_limits<int>::max(),
+                                    rootPlayer, value);
+            game.undo();
+            if(!completed) return false;
+
+            moves.push_back(move);
+            scores.push_back(value);
+        }
+        return true;
+    }
+
+    py::dict rank_root_moves(PyGame &game) {
+        statesSearched = 0;
+        completedDepth = 0;
+        vector<int> bestMoves;
+        vector<int> bestScores;
+
+        for(int depth = 1; statesSearched < maxStates; depth++) {
+            vector<int> moves;
+            vector<int> scores;
+            if(!rootScoresAtDepth(game, depth, moves, scores)) break;
+            if(moves.empty()) break;
+            bestMoves = std::move(moves);
+            bestScores = std::move(scores);
+            completedDepth = depth;
         }
 
-        float sum = 0.0f;
-        for (float x : policy) sum += x;
-        if (sum > 0) for (float &x : policy) x /= sum;
+        py::dict result;
+        result["moves"] = bestMoves;
+        result["scores"] = bestScores;
+        result["states_searched"] = statesSearched;
+        result["completed_depth"] = completedDepth;
+        return result;
+    }
 
-        return {policy, best_move};
+    uint64_t states_searched() const {
+        return statesSearched;
+    }
+
+    int completed_depth() const {
+        return completedDepth;
     }
 };
+
 
 PYBIND11_MODULE(az_engine, m) {
     py::class_<PyGame>(m, "Game")
@@ -815,21 +1080,36 @@ PYBIND11_MODULE(az_engine, m) {
         .def("current_player", &PyGame::current_player)
         .def("is_over", &PyGame::is_over)
         .def("winner", &PyGame::winner)
+        .def("score_p1", &PyGame::score_p1)
+        .def("score_p2", &PyGame::score_p2)
+        .def("total_territory", &PyGame::total_territory)
         .def("apply", &PyGame::apply)
         .def("undo", &PyGame::undo)
-        .def("legal_moves_top20", &PyGame::legal_moves_top20)
         .def("legal_moves_all", &PyGame::legal_moves_all)
         .def("hash", &PyGame::hash)
-        .def("state_tensor", &PyGame::state_tensor);
+        .def("stones", &PyGame::stones)
+        .def("territories", &PyGame::territories);
 
-    py::class_<MCTS>(m, "MCTS")
-        .def(py::init<float,int,float,float,uint64_t>(),
-             py::arg("cpuct")=1.5f,
-             py::arg("n_sims")=200,
-             py::arg("dir_alpha")=0.3f,
-             py::arg("dir_eps")=0.25f,
-             py::arg("seed")=12345)
-        .def("run", &MCTS::run,
+    py::class_<Minimax>(m, "Minimax")
+        .def(py::init<uint64_t>(), py::arg("max_states")=1000000)
+        .def("evaluate", &Minimax::evaluate,
              py::arg("game"),
-             py::arg("eval_fn"));
+             py::arg("root_player"))
+        .def("best_move", &Minimax::best_move,
+             py::arg("game"))
+        .def("best_move_ordered", &Minimax::best_move_ordered,
+             py::arg("game"),
+             py::arg("preferred_moves"))
+        .def("best_move_subset", &Minimax::best_move_subset,
+             py::arg("game"),
+             py::arg("root_moves"))
+        .def("best_move_subset_parallel", &Minimax::best_move_subset_parallel,
+             py::arg("game"),
+             py::arg("root_moves"),
+             py::arg("workers")=0,
+             py::call_guard<py::gil_scoped_release>())
+        .def("rank_root_moves", &Minimax::rank_root_moves,
+             py::arg("game"))
+        .def("states_searched", &Minimax::states_searched)
+        .def("completed_depth", &Minimax::completed_depth);
 }
