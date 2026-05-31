@@ -335,6 +335,7 @@ def generate_guided_shard(task: tuple) -> dict:
         max_samples_per_game,
         max_game_moves,
         progress_every,
+        value_model,
     ) = task
     started = time.monotonic()
     rng = random.Random(seed)
@@ -367,6 +368,7 @@ def generate_guided_shard(task: tuple) -> dict:
             teacher = az_engine.Minimax(
                 max_states=teacher_states,
                 internal_top_k=internal_top_k,
+                value_model=value_model,
             )
             info = teacher.best_move_subset_parallel_info(
                 game,
@@ -456,6 +458,7 @@ def generate_guided_data(args, iteration: int, model_path: Path):
             args.max_samples_per_game,
             args.max_game_moves,
             args.progress_every,
+            args.value_model,
         )
         print(
             f"Generating {args.samples_per_iteration:,} CNN-guided positions "
@@ -499,6 +502,7 @@ def generate_guided_data(args, iteration: int, model_path: Path):
             args.max_samples_per_game,
             args.max_game_moves,
             args.progress_every,
+            args.value_model,
         )
         for worker_id, sample_target in enumerate(split_samples(args.samples_per_iteration, workers))
     ]
@@ -551,6 +555,7 @@ def main():
     parser.add_argument("--active-model", type=Path, default=Path("model/move_ranker_self.ts"))
     parser.add_argument("--samples-per-iteration", type=int, default=500_000)
     parser.add_argument("--teacher-states", type=int, default=500_000)
+    parser.add_argument("--value-model", default="")
     parser.add_argument("--root-top-k", type=int, default=12)
     parser.add_argument("--internal-top-k", type=int, default=0)
     parser.add_argument("--extra-random-moves", type=int, default=2)
@@ -586,6 +591,8 @@ def main():
     args.torch_threads = max(1, args.torch_threads)
     if args.workers is not None:
         args.workers = max(1, args.workers)
+    if args.value_model and not Path(args.value_model).exists():
+        raise FileNotFoundError(f"Missing native value model: {args.value_model}")
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
     args.checkpoint_dir.mkdir(parents=True, exist_ok=True)

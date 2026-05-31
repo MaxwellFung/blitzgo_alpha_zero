@@ -109,6 +109,7 @@ def generate_shard(task: tuple) -> dict:
         root_top_k,
         internal_top_k,
         extra_random_moves,
+        value_model,
     ) = task
     started = time.monotonic()
     rng = random.Random(seed)
@@ -135,8 +136,9 @@ def generate_shard(task: tuple) -> dict:
             if not candidates:
                 break
             teacher = az_engine.Minimax(
-                max_states=teacher_states,
-                internal_top_k=internal_top_k,
+            max_states=teacher_states,
+            internal_top_k=internal_top_k,
+            value_model=value_model,
             )
             labels = teacher.best_move_subset_parallel_info(
                 game,
@@ -220,6 +222,7 @@ def main():
     parser.add_argument("--root-top-k", type=int, default=12)
     parser.add_argument("--internal-top-k", type=int, default=0)
     parser.add_argument("--extra-random-moves", type=int, default=2)
+    parser.add_argument("--value-model", default="")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument(
         "--search-workers",
@@ -262,6 +265,8 @@ def main():
         raise ValueError("--internal-top-k must be at least 0.")
     if args.extra_random_moves < 0:
         raise ValueError("--extra-random-moves must be at least 0.")
+    if args.value_model and not Path(args.value_model).exists():
+        raise FileNotFoundError(f"Missing native value model: {args.value_model}")
     ranker_path = Path(args.ranker)
     if not ranker_path.exists():
         raise FileNotFoundError(f"Missing TorchScript move ranker: {ranker_path}")
@@ -276,7 +281,8 @@ def main():
     print(f"Minimax root search workers per position: {search_workers}.")
     print(
         f"CNN-guided minimax: ranker={ranker_path}, root_top_k={args.root_top_k}, "
-        f"extra_random_moves={args.extra_random_moves}, internal_top_k={args.internal_top_k}."
+        f"extra_random_moves={args.extra_random_moves}, internal_top_k={args.internal_top_k}, "
+        f"value_model={args.value_model or 'heuristic'}."
     )
     if workers > 1 and search_workers > 1:
         print(
@@ -316,6 +322,7 @@ def main():
             args.root_top_k,
             args.internal_top_k,
             args.extra_random_moves,
+            args.value_model,
         )
         for worker_id, sample_count in enumerate(split_samples(args.samples, workers))
     ]

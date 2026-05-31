@@ -12,7 +12,7 @@ import az_engine
 
 BOARD_SIZE = 7
 NUM_STATES_SEARCHED = 10000000
-RANKER_MODEL = "model/move_ranker_7x7.ts"
+RANKER_MODEL = "model/move_ranker.ts"
 TOP_K = 12
 WORKERS = os.cpu_count() or 1
 
@@ -88,6 +88,7 @@ def play_minimax(
     ranker_model: str,
     top_k: int,
     internal_top_k: int,
+    value_model: str,
     workers: int,
 ):
     from move_ranker import load_scripted_model, ranked_moves
@@ -98,10 +99,13 @@ def play_minimax(
             "Generate data with `python3 py/generate_training_data.py`, then train with "
             "`python3 py/train_move_ranker.py`."
         )
+    if value_model and not Path(value_model).exists():
+        raise FileNotFoundError(f"Missing native value model: {value_model}")
 
     search = az_engine.Minimax(
         max_states=max_states,
         internal_top_k=max(0, internal_top_k),
+        value_model=value_model,
     )
     model = load_scripted_model(ranker_model)
 
@@ -109,7 +113,7 @@ def play_minimax(
     print(
         f"\nPlay against {player_name} with {max_states:,} searched states per move "
         f"using {ranker_model}, internal top-{max(0, internal_top_k) or 'all'}, "
-        f"and {workers} CPU workers."
+        f"value model {value_model or 'heuristic'}, and {workers} CPU workers."
     )
     side = input("Play as player 1 (X) or player 2 (O)? [1/2]: ").strip()
     human_side = 1 if side != "2" else 2
@@ -147,6 +151,7 @@ def main():
     )
     parser.add_argument("--top-k", type=int, default=TOP_K)
     parser.add_argument("--internal-top-k", type=int, default=0)
+    parser.add_argument("--value-model", default="")
     parser.add_argument("--workers", type=int, default=WORKERS)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
@@ -171,6 +176,7 @@ def main():
             args.ranker,
             args.top_k,
             args.internal_top_k,
+            args.value_model,
             max(1, args.workers),
         )
 

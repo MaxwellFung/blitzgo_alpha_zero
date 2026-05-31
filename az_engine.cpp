@@ -20,6 +20,12 @@
 #include <array>
 #include <future>
 #include <limits>
+#include <cmath>
+#include <fstream>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
 
 namespace py = pybind11;
 using namespace std;
@@ -559,11 +565,117 @@ struct PyGame {
 // ALPHA-BETA MINIMAX
 // ============================================================
 
+struct TinyValueModel {
+    static constexpr int N = 7;
+    static constexpr int N2 = N * N;
+    static constexpr int INPUTS = 5;
+    static constexpr int HIDDEN = 8;
+
+    float scale = 500.0f;
+    array<float, HIDDEN * INPUTS * 3 * 3> conv1Weight;
+    array<float, HIDDEN> conv1Bias;
+    array<float, HIDDEN * HIDDEN * 3 * 3> conv2Weight;
+    array<float, HIDDEN> conv2Bias;
+    array<float, HIDDEN * N2> outputWeight;
+    float outputBias = 0.0f;
+
+    template<size_t Size>
+    static void read_array(ifstream &input, array<float, Size> &values) {
+        input.read(reinterpret_cast<char *>(values.data()), sizeof(float) * Size);
+        if(!input) throw runtime_error("Truncated BlitzGo value model.");
+    }
+
+    explicit TinyValueModel(const string &path) {
+        ifstream input(path, ios::binary);
+        if(!input) throw runtime_error("Unable to open BlitzGo value model: " + path);
+        array<char, 9> magic;
+        input.read(magic.data(), magic.size());
+        if(!input || string(magic.data(), magic.size()) != "BLITZVAL1") {
+            throw runtime_error("Invalid BlitzGo value model: " + path);
+        }
+        input.read(reinterpret_cast<char *>(&scale), sizeof(scale));
+        if(!input) throw runtime_error("Truncated BlitzGo value model.");
+        read_array(input, conv1Weight);
+        read_array(input, conv1Bias);
+        read_array(input, conv2Weight);
+        read_array(input, conv2Bias);
+        read_array(input, outputWeight);
+        input.read(reinterpret_cast<char *>(&outputBias), sizeof(outputBias));
+        if(!input) throw runtime_error("Truncated BlitzGo value model.");
+    }
+
+    int evaluate(const PyGame &game, int rootPlayer) const {
+        if(game.size() != N) throw runtime_error("Value model expects a 7x7 board.");
+        int opponent = rootPlayer == 1 ? 2 : 1;
+        array<float, INPUTS * N2> board = {};
+        for(int pos = 0; pos < N2; pos++) {
+            uint8_t stone = game.g.board.stones[pos];
+            uint8_t territory = game.g.board.terr[pos];
+            board[0 * N2 + pos] = stone == rootPlayer;
+            board[1 * N2 + pos] = stone == opponent;
+            board[2 * N2 + pos] = territory == rootPlayer;
+            board[3 * N2 + pos] = territory == opponent;
+            board[4 * N2 + pos] = stone == 0;
+        }
+
+        array<float, HIDDEN * N2> hidden1 = {};
+        array<float, HIDDEN * N2> hidden2 = {};
+        for(int out = 0; out < HIDDEN; out++) {
+            for(int y = 0; y < N; y++) for(int x = 0; x < N; x++) {
+                float value = conv1Bias[out];
+                for(int in = 0; in < INPUTS; in++) {
+                    for(int ky = 0; ky < 3; ky++) for(int kx = 0; kx < 3; kx++) {
+                        int iy = y + ky - 1, ix = x + kx - 1;
+                        if(iy < 0 || iy >= N || ix < 0 || ix >= N) continue;
+                        int weight = ((out * INPUTS + in) * 3 + ky) * 3 + kx;
+                        value += conv1Weight[weight] * board[in * N2 + iy * N + ix];
+                    }
+                }
+                hidden1[out * N2 + y * N + x] = max(0.0f, value);
+            }
+        }
+        for(int out = 0; out < HIDDEN; out++) {
+            for(int y = 0; y < N; y++) for(int x = 0; x < N; x++) {
+                float value = conv2Bias[out];
+                for(int in = 0; in < HIDDEN; in++) {
+                    for(int ky = 0; ky < 3; ky++) for(int kx = 0; kx < 3; kx++) {
+                        int iy = y + ky - 1, ix = x + kx - 1;
+                        if(iy < 0 || iy >= N || ix < 0 || ix >= N) continue;
+                        int weight = ((out * HIDDEN + in) * 3 + ky) * 3 + kx;
+                        value += conv2Weight[weight] * hidden1[in * N2 + iy * N + ix];
+                    }
+                }
+                hidden2[out * N2 + y * N + x] = max(0.0f, value);
+            }
+        }
+
+        float value = outputBias;
+        for(size_t i = 0; i < hidden2.size(); i++) value += outputWeight[i] * hidden2[i];
+        return (int)lround(scale * tanh(value));
+    }
+};
+
+static shared_ptr<const TinyValueModel> load_value_model(const string &path) {
+    if(path.empty()) return nullptr;
+    static mutex cacheMutex;
+    static unordered_map<string, weak_ptr<const TinyValueModel>> cache;
+    lock_guard<mutex> lock(cacheMutex);
+    auto found = cache.find(path);
+    if(found != cache.end()) {
+        auto model = found->second.lock();
+        if(model) return model;
+    }
+    auto model = make_shared<const TinyValueModel>(path);
+    cache[path] = model;
+    return model;
+}
+
 struct Minimax {
     uint64_t maxStates;
     uint64_t statesSearched = 0;
     int completedDepth = 0;
     int internalTopK = 0;
+    shared_ptr<const TinyValueModel> valueModel;
 
     enum Bound : uint8_t {
         EXACT = 0,
@@ -580,9 +692,19 @@ struct Minimax {
 
     unordered_map<uint64_t, TTEntry> table;
 
-    explicit Minimax(uint64_t maxStates_=1000000, int internalTopK_=0)
+    explicit Minimax(uint64_t maxStates_=1000000, int internalTopK_=0,
+                     const string &valueModelPath_="")
         : maxStates(max<uint64_t>(1, maxStates_)),
-          internalTopK(max(0, internalTopK_)) {
+          internalTopK(max(0, internalTopK_)),
+          valueModel(load_value_model(valueModelPath_)) {
+        table.reserve(1 << 16);
+    }
+
+    explicit Minimax(uint64_t maxStates_, int internalTopK_,
+                     shared_ptr<const TinyValueModel> valueModel_)
+        : maxStates(max<uint64_t>(1, maxStates_)),
+          internalTopK(max(0, internalTopK_)),
+          valueModel(std::move(valueModel_)) {
         table.reserve(1 << 16);
     }
 
@@ -597,6 +719,7 @@ struct Minimax {
     }
 
     int evaluate(const PyGame &game, int rootPlayer) const {
+        if(valueModel) return valueModel->evaluate(game, rootPlayer);
         const Board &b = game.g.board;
         int opponent = rootPlayer == 1 ? 2 : 1;
         int value = 0;
@@ -942,7 +1065,7 @@ struct Minimax {
                 if(copy.apply(firstResult.move) != 0) {
                     firstResult.completed = false;
                 } else {
-                    Minimax firstSearch(perMoveBudget, internalTopK);
+                    Minimax firstSearch(perMoveBudget, internalTopK, valueModel);
                     int value = 0;
                     bool completed = firstSearch.search(
                         copy,
@@ -975,7 +1098,7 @@ struct Minimax {
                     futures.push_back(async(
                         launch::async,
                         [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha,
-                         childInternalTopK]() {
+                         childInternalTopK, model=valueModel]() {
                             RootResult result;
                             result.move = move;
 
@@ -985,7 +1108,7 @@ struct Minimax {
                                 return result;
                             }
 
-                            Minimax localSearch(perMoveBudget, childInternalTopK);
+                            Minimax localSearch(perMoveBudget, childInternalTopK, model);
                             int value = 0;
                             bool completed = localSearch.search(
                                 copy,
@@ -1105,7 +1228,7 @@ struct Minimax {
                     if(copy.apply(firstResult.move) != 0) {
                         firstResult.completed = false;
                     } else {
-                        Minimax firstSearch(perMoveBudget, internalTopK);
+                        Minimax firstSearch(perMoveBudget, internalTopK, valueModel);
                         int value = 0;
                         bool completed = firstSearch.search(
                             copy,
@@ -1138,7 +1261,7 @@ struct Minimax {
                         futures.push_back(async(
                             launch::async,
                             [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha,
-                             childInternalTopK]() {
+                             childInternalTopK, model=valueModel]() {
                                 RootResult result;
                                 result.move = move;
 
@@ -1148,7 +1271,7 @@ struct Minimax {
                                     return result;
                                 }
 
-                                Minimax localSearch(perMoveBudget, childInternalTopK);
+                                Minimax localSearch(perMoveBudget, childInternalTopK, model);
                                 int value = 0;
                                 bool completed = localSearch.search(
                                     copy,
@@ -1305,7 +1428,7 @@ struct Minimax {
                 futures.push_back(async(
                     launch::async,
                     [&game, move, depth, rootPlayer, perMoveBudget,
-                     childInternalTopK]() {
+                     childInternalTopK, model=valueModel]() {
                         RootScore result;
                         result.move = move;
 
@@ -1316,7 +1439,7 @@ struct Minimax {
                         }
                         result.legal = true;
 
-                        Minimax localSearch(perMoveBudget, childInternalTopK);
+                        Minimax localSearch(perMoveBudget, childInternalTopK, model);
                         int value = 0;
                         bool completed = localSearch.search(
                             copy,
@@ -1441,9 +1564,10 @@ PYBIND11_MODULE(az_engine, m) {
         .def("territories", &PyGame::territories);
 
     py::class_<Minimax>(m, "Minimax")
-        .def(py::init<uint64_t, int>(),
+        .def(py::init<uint64_t, int, const string &>(),
              py::arg("max_states")=1000000,
-             py::arg("internal_top_k")=0)
+             py::arg("internal_top_k")=0,
+             py::arg("value_model")="")
         .def("evaluate", &Minimax::evaluate,
              py::arg("game"),
              py::arg("root_player"))

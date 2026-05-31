@@ -31,6 +31,7 @@ class GameSession:
         ranker_path: str,
         top_k: int,
         internal_top_k: int,
+        value_model: str,
         workers: int,
     ):
         self.size = size
@@ -38,6 +39,7 @@ class GameSession:
         self.ranker_path = ranker_path
         self.top_k = top_k
         self.internal_top_k = max(0, internal_top_k)
+        self.value_model = value_model
         self.workers = max(1, workers)
         self.lock = threading.Lock()
         if not Path(ranker_path).exists():
@@ -46,6 +48,8 @@ class GameSession:
                 "Generate data with `python3 py/generate_training_data.py`, then train with "
                 "`python3 py/train_move_ranker.py`."
             )
+        if value_model and not Path(value_model).exists():
+            raise FileNotFoundError(f"Missing native value model: {value_model}")
         self.model = load_scripted_model(ranker_path)
         self.mode = "engine"
         self.human_side = 1
@@ -190,6 +194,7 @@ class GameSession:
             search = az_engine.Minimax(
                 max_states=self.states,
                 internal_top_k=self.internal_top_k,
+                value_model=self.value_model,
             )
             cnn_top_k = self.cnn_top_k_locked()
             candidates = [item["move"] for item in cnn_top_k]
@@ -219,6 +224,7 @@ class GameSession:
                 "y": move // self.size + 1,
                 "kept": len(candidates),
                 "internal_top_k": self.internal_top_k,
+                "value_model": self.value_model or None,
                 "states": int(search_info["states_searched"]),
                 "completed_depth": int(search_info["completed_depth"]),
                 "cnn_top_k": cnn_top_k,
@@ -309,6 +315,7 @@ def main():
         help="Experimental minimax pruning below the root. 0 searches all internal moves.",
     )
     parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--value-model", default="")
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
         raise SystemExit(
@@ -324,6 +331,7 @@ def main():
         args.ranker,
         args.top_k,
         args.internal_top_k,
+        args.value_model,
         max(1, args.workers),
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session, ui_dir))
@@ -331,7 +339,8 @@ def main():
     print(
         f"Engine: top-{args.top_k}, internal_top_k={max(0, args.internal_top_k)}, "
         f"states={args.states:,}, "
-        f"workers={max(1, args.workers)}, ranker={args.ranker}"
+        f"workers={max(1, args.workers)}, ranker={args.ranker}, "
+        f"value_model={args.value_model or 'heuristic'}"
     )
     server.serve_forever()
 
