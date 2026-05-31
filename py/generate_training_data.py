@@ -33,6 +33,7 @@ BOARD_SIZE = 7
 ACTION_SIZE = BOARD_SIZE * BOARD_SIZE
 ILLEGAL_SCORE = np.iinfo(np.int16).min
 PROGRESS_QUEUE = None
+VALUE_MODEL = "model/value_ranker.bin"
 
 
 def initialize_worker(progress_queue):
@@ -222,7 +223,7 @@ def main():
     parser.add_argument("--root-top-k", type=int, default=12)
     parser.add_argument("--internal-top-k", type=int, default=0)
     parser.add_argument("--extra-random-moves", type=int, default=2)
-    parser.add_argument("--value-model", default="")
+    parser.add_argument("--value-model", default=VALUE_MODEL)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument(
         "--search-workers",

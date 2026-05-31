@@ -285,6 +285,8 @@
         <div class="stats">
           <div>Turn: <strong id="turn">-</strong></div>
           <div>Territory: <strong id="score">-</strong></div>
+          <div>Value CNN: <strong id="valueEvaluation">-</strong></div>
+          <div>Heuristic: <strong id="heuristicEvaluation">-</strong></div>
           <div>Status: <strong id="status">-</strong></div>
         </div>
         <div id="message"></div>
@@ -316,6 +318,8 @@
       const engineMove = document.querySelector("#engineMove");
       const turn = document.querySelector("#turn");
       const score = document.querySelector("#score");
+      const valueEvaluation = document.querySelector("#valueEvaluation");
+      const heuristicEvaluation = document.querySelector("#heuristicEvaluation");
       const statusEl = document.querySelector("#status");
       const message = document.querySelector("#message");
       const rankerMeta = document.querySelector("#rankerMeta");
@@ -454,6 +458,8 @@
 
         turn.textContent = `Player ${data.current_player}`;
         score.textContent = `P1 ${data.score_p1} / P2 ${data.score_p2}`;
+        valueEvaluation.textContent = `${data.value_evaluation >= 0 ? "+" : ""}${data.value_evaluation} for P${data.current_player}`;
+        heuristicEvaluation.textContent = `${data.heuristic_evaluation >= 0 ? "+" : ""}${data.heuristic_evaluation} for P${data.current_player}`;
         statusEl.textContent = data.is_over
           ? data.winner
             ? `Player ${data.winner} wins`

@@ -16,8 +16,9 @@ from move_ranker import load_scripted_model, ranked_move_predictions
 
 
 BOARD_SIZE = 7
-NUM_STATES_SEARCHED = 10000000
+NUM_STATES_SEARCHED = 2500000
 RANKER_MODEL = "model/move_ranker.ts"
+VALUE_MODEL = "model/value_ranker.bin"
 TOP_K = 12
 INTERNAL_TOP_K = 0
 WORKERS = os.cpu_count() or 1
@@ -51,6 +52,8 @@ class GameSession:
         if value_model and not Path(value_model).exists():
             raise FileNotFoundError(f"Missing native value model: {value_model}")
         self.model = load_scripted_model(ranker_path)
+        self.value_evaluator = az_engine.Minimax(value_model=value_model)
+        self.heuristic_evaluator = az_engine.Minimax()
         self.mode = "engine"
         self.human_side = 1
         self.game = az_engine.Game(size)
@@ -72,11 +75,17 @@ class GameSession:
 
     def state_locked(self):
         winner = self.game.winner() if self.game.is_over() else None
+        current_player = self.game.current_player()
         return {
             "size": self.size,
             "mode": self.mode,
             "human_side": self.human_side,
-            "current_player": self.game.current_player(),
+            "current_player": current_player,
+            "value_evaluation": int(self.value_evaluator.evaluate(self.game, current_player)),
+            "heuristic_evaluation": int(
+                self.heuristic_evaluator.evaluate(self.game, current_player)
+            ),
+            "value_model": self.value_model or None,
             "is_over": self.game.is_over(),
             "winner": winner,
             "score_p1": self.game.score_p1(),
@@ -315,7 +324,7 @@ def main():
         help="Experimental minimax pruning below the root. 0 searches all internal moves.",
     )
     parser.add_argument("--workers", type=int, default=WORKERS)
-    parser.add_argument("--value-model", default="")
+    parser.add_argument("--value-model", default=VALUE_MODEL)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
         raise SystemExit(

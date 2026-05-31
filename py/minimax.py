@@ -11,8 +11,9 @@ import az_engine
 # ================== CONFIG ==================
 
 BOARD_SIZE = 7
-NUM_STATES_SEARCHED = 10000000
+NUM_STATES_SEARCHED = 2500000
 RANKER_MODEL = "model/move_ranker.ts"
+VALUE_MODEL = "model/value_ranker.bin"
 TOP_K = 12
 WORKERS = os.cpu_count() or 1
 
@@ -151,7 +152,7 @@ def main():
     )
     parser.add_argument("--top-k", type=int, default=TOP_K)
     parser.add_argument("--internal-top-k", type=int, default=0)
-    parser.add_argument("--value-model", default="")
+    parser.add_argument("--value-model", default=VALUE_MODEL)
     parser.add_argument("--workers", type=int, default=WORKERS)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:

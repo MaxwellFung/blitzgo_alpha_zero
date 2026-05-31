@@ -36,6 +36,7 @@ torch.set_num_threads(1)
 
 ILLEGAL_SCORE = np.iinfo(np.int16).min
 PROGRESS_QUEUE = None
+VALUE_MODEL = "model/value_ranker.bin"
 
 
 def cpu_count() -> int:
@@ -555,7 +556,7 @@ def main():
     parser.add_argument("--active-model", type=Path, default=Path("model/move_ranker_self.ts"))
     parser.add_argument("--samples-per-iteration", type=int, default=500_000)
     parser.add_argument("--teacher-states", type=int, default=500_000)
-    parser.add_argument("--value-model", default="")
+    parser.add_argument("--value-model", default=VALUE_MODEL)
     parser.add_argument("--root-top-k", type=int, default=12)
     parser.add_argument("--internal-top-k", type=int, default=0)
     parser.add_argument("--extra-random-moves", type=int, default=2)
