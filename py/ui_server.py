@@ -19,15 +19,25 @@ BOARD_SIZE = 7
 NUM_STATES_SEARCHED = 10000000
 RANKER_MODEL = "model/move_ranker.ts"
 TOP_K = 12
+INTERNAL_TOP_K = 0
 WORKERS = os.cpu_count() or 1
 
 
 class GameSession:
-    def __init__(self, size: int, states: int, ranker_path: str, top_k: int, workers: int):
+    def __init__(
+        self,
+        size: int,
+        states: int,
+        ranker_path: str,
+        top_k: int,
+        internal_top_k: int,
+        workers: int,
+    ):
         self.size = size
         self.states = states
         self.ranker_path = ranker_path
         self.top_k = top_k
+        self.internal_top_k = max(0, internal_top_k)
         self.workers = max(1, workers)
         self.lock = threading.Lock()
         if not Path(ranker_path).exists():
@@ -177,7 +187,10 @@ class GameSession:
                 self.message = "It is the human's turn."
                 return self.state_locked()
 
-            search = az_engine.Minimax(max_states=self.states)
+            search = az_engine.Minimax(
+                max_states=self.states,
+                internal_top_k=self.internal_top_k,
+            )
             cnn_top_k = self.cnn_top_k_locked()
             candidates = [item["move"] for item in cnn_top_k]
             search_info = search.best_move_subset_parallel_info(
@@ -205,6 +218,7 @@ class GameSession:
                 "x": move % self.size + 1,
                 "y": move // self.size + 1,
                 "kept": len(candidates),
+                "internal_top_k": self.internal_top_k,
                 "states": int(search_info["states_searched"]),
                 "completed_depth": int(search_info["completed_depth"]),
                 "cnn_top_k": cnn_top_k,
@@ -288,6 +302,12 @@ def main():
     parser.add_argument("--states", type=int, default=NUM_STATES_SEARCHED)
     parser.add_argument("--ranker", default=RANKER_MODEL)
     parser.add_argument("--top-k", type=int, default=TOP_K)
+    parser.add_argument(
+        "--internal-top-k",
+        type=int,
+        default=INTERNAL_TOP_K,
+        help="Experimental minimax pruning below the root. 0 searches all internal moves.",
+    )
     parser.add_argument("--workers", type=int, default=WORKERS)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
@@ -303,12 +323,14 @@ def main():
         args.states,
         args.ranker,
         args.top_k,
+        args.internal_top_k,
         max(1, args.workers),
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session, ui_dir))
     print(f"BlitzGo UI: http://{args.host}:{args.port}")
     print(
-        f"Engine: top-{args.top_k}, states={args.states:,}, "
+        f"Engine: top-{args.top_k}, internal_top_k={max(0, args.internal_top_k)}, "
+        f"states={args.states:,}, "
         f"workers={max(1, args.workers)}, ranker={args.ranker}"
     )
     server.serve_forever()

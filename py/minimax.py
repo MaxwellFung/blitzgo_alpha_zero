@@ -87,6 +87,7 @@ def play_minimax(
     max_states: int,
     ranker_model: str,
     top_k: int,
+    internal_top_k: int,
     workers: int,
 ):
     from move_ranker import load_scripted_model, ranked_moves
@@ -98,13 +99,17 @@ def play_minimax(
             "`python3 py/train_move_ranker.py`."
         )
 
-    search = az_engine.Minimax(max_states=max_states)
+    search = az_engine.Minimax(
+        max_states=max_states,
+        internal_top_k=max(0, internal_top_k),
+    )
     model = load_scripted_model(ranker_model)
 
     player_name = f"CNN top-{top_k} parallel minimax"
     print(
         f"\nPlay against {player_name} with {max_states:,} searched states per move "
-        f"using {ranker_model} and {workers} CPU workers."
+        f"using {ranker_model}, internal top-{max(0, internal_top_k) or 'all'}, "
+        f"and {workers} CPU workers."
     )
     side = input("Play as player 1 (X) or player 2 (O)? [1/2]: ").strip()
     human_side = 1 if side != "2" else 2
@@ -141,6 +146,7 @@ def main():
         help="TorchScript move-ranker model.",
     )
     parser.add_argument("--top-k", type=int, default=TOP_K)
+    parser.add_argument("--internal-top-k", type=int, default=0)
     parser.add_argument("--workers", type=int, default=WORKERS)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
@@ -164,6 +170,7 @@ def main():
             args.states,
             args.ranker,
             args.top_k,
+            args.internal_top_k,
             max(1, args.workers),
         )
 

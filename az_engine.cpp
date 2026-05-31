@@ -563,6 +563,7 @@ struct Minimax {
     uint64_t maxStates;
     uint64_t statesSearched = 0;
     int completedDepth = 0;
+    int internalTopK = 0;
 
     enum Bound : uint8_t {
         EXACT = 0,
@@ -579,8 +580,9 @@ struct Minimax {
 
     unordered_map<uint64_t, TTEntry> table;
 
-    explicit Minimax(uint64_t maxStates_=1000000)
-        : maxStates(max<uint64_t>(1, maxStates_)) {
+    explicit Minimax(uint64_t maxStates_=1000000, int internalTopK_=0)
+        : maxStates(max<uint64_t>(1, maxStates_)),
+          internalTopK(max(0, internalTopK_)) {
         table.reserve(1 << 16);
     }
 
@@ -734,7 +736,12 @@ struct Minimax {
         bool foundMove = false;
         int bestMove = -1;
 
-        for(int move : ordered_moves(game, ttMove)) {
+        vector<int> moves = ordered_moves(game, ttMove);
+        if(internalTopK > 0 && (int)moves.size() > internalTopK) {
+            moves.resize((size_t)internalTopK);
+        }
+
+        for(int move : moves) {
             if(game.apply(move) != 0) continue;
             foundMove = true;
 
@@ -926,6 +933,7 @@ struct Minimax {
             uint64_t depthStates = 0;
             bool completedDepthThisRound = true;
             int sharedAlpha = numeric_limits<int>::min();
+            int childInternalTopK = internalTopK;
 
             RootResult firstResult;
             firstResult.move = depthRootMoves.front();
@@ -934,7 +942,7 @@ struct Minimax {
                 if(copy.apply(firstResult.move) != 0) {
                     firstResult.completed = false;
                 } else {
-                    Minimax firstSearch(perMoveBudget);
+                    Minimax firstSearch(perMoveBudget, internalTopK);
                     int value = 0;
                     bool completed = firstSearch.search(
                         copy,
@@ -966,7 +974,8 @@ struct Minimax {
                     int move = depthRootMoves[i];
                     futures.push_back(async(
                         launch::async,
-                        [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha]() {
+                        [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha,
+                         childInternalTopK]() {
                             RootResult result;
                             result.move = move;
 
@@ -976,7 +985,7 @@ struct Minimax {
                                 return result;
                             }
 
-                            Minimax localSearch(perMoveBudget);
+                            Minimax localSearch(perMoveBudget, childInternalTopK);
                             int value = 0;
                             bool completed = localSearch.search(
                                 copy,
@@ -1087,6 +1096,7 @@ struct Minimax {
                 uint64_t depthStates = 0;
                 bool completedDepthThisRound = true;
                 int sharedAlpha = numeric_limits<int>::min();
+                int childInternalTopK = internalTopK;
 
                 RootResult firstResult;
                 firstResult.move = depthRootMoves.front();
@@ -1095,7 +1105,7 @@ struct Minimax {
                     if(copy.apply(firstResult.move) != 0) {
                         firstResult.completed = false;
                     } else {
-                        Minimax firstSearch(perMoveBudget);
+                        Minimax firstSearch(perMoveBudget, internalTopK);
                         int value = 0;
                         bool completed = firstSearch.search(
                             copy,
@@ -1127,7 +1137,8 @@ struct Minimax {
                         int move = depthRootMoves[i];
                         futures.push_back(async(
                             launch::async,
-                            [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha]() {
+                            [&game, move, depth, rootPlayer, perMoveBudget, sharedAlpha,
+                             childInternalTopK]() {
                                 RootResult result;
                                 result.move = move;
 
@@ -1137,7 +1148,7 @@ struct Minimax {
                                     return result;
                                 }
 
-                                Minimax localSearch(perMoveBudget);
+                                Minimax localSearch(perMoveBudget, childInternalTopK);
                                 int value = 0;
                                 bool completed = localSearch.search(
                                     copy,
@@ -1281,6 +1292,7 @@ struct Minimax {
         vector<RootScore> results;
         results.reserve(legalRootMoves.size());
         bool completedDepthThisRound = true;
+        int childInternalTopK = internalTopK;
 
         for(size_t start = 0; start < legalRootMoves.size();
             start += (size_t)workers) {
@@ -1292,7 +1304,8 @@ struct Minimax {
                 int move = legalRootMoves[i];
                 futures.push_back(async(
                     launch::async,
-                    [&game, move, depth, rootPlayer, perMoveBudget]() {
+                    [&game, move, depth, rootPlayer, perMoveBudget,
+                     childInternalTopK]() {
                         RootScore result;
                         result.move = move;
 
@@ -1303,7 +1316,7 @@ struct Minimax {
                         }
                         result.legal = true;
 
-                        Minimax localSearch(perMoveBudget);
+                        Minimax localSearch(perMoveBudget, childInternalTopK);
                         int value = 0;
                         bool completed = localSearch.search(
                             copy,
@@ -1428,7 +1441,9 @@ PYBIND11_MODULE(az_engine, m) {
         .def("territories", &PyGame::territories);
 
     py::class_<Minimax>(m, "Minimax")
-        .def(py::init<uint64_t>(), py::arg("max_states")=1000000)
+        .def(py::init<uint64_t, int>(),
+             py::arg("max_states")=1000000,
+             py::arg("internal_top_k")=0)
         .def("evaluate", &Minimax::evaluate,
              py::arg("game"),
              py::arg("root_player"))
