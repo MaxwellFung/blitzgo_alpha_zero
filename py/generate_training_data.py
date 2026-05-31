@@ -20,9 +20,13 @@ for variable in (
     os.environ.setdefault(variable, "1")
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 import az_engine
+from move_ranker import ranked_moves
+
+torch.set_num_threads(1)
 
 
 BOARD_SIZE = 7
@@ -70,6 +74,21 @@ def choose_played_move(
     return rng.choice(ranked)[0]
 
 
+def candidate_moves(model, game, top_k: int, extra_random: int, rng: random.Random) -> list[int]:
+    legal = list(game.legal_moves_playable())
+    if not legal:
+        return []
+    candidates = ranked_moves(model, game)[: min(top_k, len(legal))]
+    if extra_random <= 0:
+        return candidates
+
+    seen = set(candidates)
+    extras = [move for move in legal if move not in seen]
+    rng.shuffle(extras)
+    candidates.extend(extras[:extra_random])
+    return candidates
+
+
 def generate_shard(task: tuple) -> dict:
     (
         worker_id,
@@ -86,9 +105,15 @@ def generate_shard(task: tuple) -> dict:
         sample_probability,
         max_samples_per_game,
         search_workers,
+        ranker_path,
+        root_top_k,
+        internal_top_k,
+        extra_random_moves,
     ) = task
     started = time.monotonic()
     rng = random.Random(seed)
+    model = torch.jit.load(ranker_path, map_location="cpu")
+    model.eval()
     boards = np.empty((sample_count, 5, BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
     legal_masks = np.zeros((sample_count, ACTION_SIZE), dtype=np.bool_)
     move_scores = np.full((sample_count, ACTION_SIZE), ILLEGAL_SCORE, dtype=np.int16)
@@ -101,16 +126,23 @@ def generate_shard(task: tuple) -> dict:
         games_played += 1
         game_samples = 0
         game = az_engine.Game(BOARD_SIZE)
-        teacher = az_engine.Minimax(max_states=teacher_states)
 
         for _ in range(max_game_moves):
             if game.is_over() or sample_index >= sample_count:
                 break
 
-            if search_workers > 1:
-                labels = teacher.rank_root_moves_parallel(game, search_workers)
-            else:
-                labels = teacher.rank_root_moves(game)
+            candidates = candidate_moves(model, game, root_top_k, extra_random_moves, rng)
+            if not candidates:
+                break
+            teacher = az_engine.Minimax(
+                max_states=teacher_states,
+                internal_top_k=internal_top_k,
+            )
+            labels = teacher.best_move_subset_parallel_info(
+                game,
+                candidates,
+                search_workers,
+            )
             moves = list(labels["moves"])
             scores = list(labels["scores"])
             if not moves:
@@ -184,6 +216,10 @@ def main():
     parser = argparse.ArgumentParser(description="Generate CNN move-ranking teacher data.")
     parser.add_argument("--samples", type=int, default=50_000)
     parser.add_argument("--teacher-states", type=int, default=100_000)
+    parser.add_argument("--ranker", default="model/move_ranker.ts")
+    parser.add_argument("--root-top-k", type=int, default=12)
+    parser.add_argument("--internal-top-k", type=int, default=0)
+    parser.add_argument("--extra-random-moves", type=int, default=2)
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument(
         "--search-workers",
@@ -220,6 +256,15 @@ def main():
         raise ValueError("--exploration-top-k must be at least 1.")
     if args.max_samples_per_game < 1:
         raise ValueError("--max-samples-per-game must be at least 1.")
+    if args.root_top_k < 1:
+        raise ValueError("--root-top-k must be at least 1.")
+    if args.internal_top_k < 0:
+        raise ValueError("--internal-top-k must be at least 0.")
+    if args.extra_random_moves < 0:
+        raise ValueError("--extra-random-moves must be at least 0.")
+    ranker_path = Path(args.ranker)
+    if not ranker_path.exists():
+        raise FileNotFoundError(f"Missing TorchScript move ranker: {ranker_path}")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     first_shard_id = next_shard_id(output_dir)
@@ -229,6 +274,10 @@ def main():
         f"and {args.teacher_states:,} teacher states per position."
     )
     print(f"Minimax root search workers per position: {search_workers}.")
+    print(
+        f"CNN-guided minimax: ranker={ranker_path}, root_top_k={args.root_top_k}, "
+        f"extra_random_moves={args.extra_random_moves}, internal_top_k={args.internal_top_k}."
+    )
     if workers > 1 and search_workers > 1:
         print(
             "Warning: --workers multiplied by --search-workers can oversubscribe "
@@ -263,6 +312,10 @@ def main():
             args.sample_probability,
             args.max_samples_per_game,
             search_workers,
+            str(ranker_path),
+            args.root_top_k,
+            args.internal_top_k,
+            args.extra_random_moves,
         )
         for worker_id, sample_count in enumerate(split_samples(args.samples, workers))
     ]
