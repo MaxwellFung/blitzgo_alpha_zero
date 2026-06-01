@@ -16,7 +16,7 @@ from value_ranker import TinyValueRanker, VALUE_SCALE, export_native_model
 ILLEGAL_SCORE = np.iinfo(np.int16).min
 
 
-def load_shards(data_dir: Path):
+def load_shards(data_dir: Path, game_data_dir: Path | None = None):
     paths = sorted(data_dir.glob("shard_*.npz"))
     if not paths:
         raise FileNotFoundError(f"No shard_*.npz files found in {data_dir}")
@@ -27,12 +27,32 @@ def load_shards(data_dir: Path):
     masked_scores = np.where(legal_masks, move_scores, ILLEGAL_SCORE)
     best_scores = masked_scores.max(axis=1).astype(np.float32)
     targets = np.tanh(best_scores / VALUE_SCALE).astype(np.float32)
-    return boards, targets
+    game_positions = 0
+    if game_data_dir is not None and game_data_dir.exists():
+        game_boards = []
+        game_targets = []
+        for path in sorted(game_data_dir.glob("game_*.npz")):
+            with np.load(path) as game:
+                if not bool(game["completed"][0]):
+                    continue
+                outcome_targets = game["outcome_targets"].astype(np.float32)
+                usable = np.isfinite(outcome_targets)
+                if usable.any():
+                    game_boards.append(game["boards"][usable])
+                    game_targets.append(outcome_targets[usable])
+        if game_boards:
+            added_boards = np.concatenate(game_boards)
+            added_targets = np.concatenate(game_targets)
+            game_positions = len(added_boards)
+            boards = np.concatenate((boards, added_boards))
+            targets = np.concatenate((targets, added_targets))
+    return boards, targets, game_positions
 
 
 def main():
     parser = argparse.ArgumentParser(description="Train the tiny native BlitzGo value CNN.")
     parser.add_argument("--data-dir", type=Path, default=Path("data/move_ranker_7x7"))
+    parser.add_argument("--game-data-dir", type=Path, default=Path("data/ui_games"))
     parser.add_argument("--output", type=Path, default=Path("model/value_ranker.bin"))
     parser.add_argument("--torchscript-output", type=Path, default=Path("model/value_ranker.ts"))
     parser.add_argument("--epochs", type=int, default=20)
@@ -48,7 +68,7 @@ def main():
     np.random.seed(args.seed)
     torch.set_num_threads(max(1, args.torch_threads))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    boards, targets = load_shards(args.data_dir)
+    boards, targets, game_positions = load_shards(args.data_dir, args.game_data_dir)
     dataset = TensorDataset(torch.from_numpy(boards), torch.from_numpy(targets))
     val_size = max(1, len(dataset) // 10)
     train_size = len(dataset) - val_size
@@ -80,7 +100,8 @@ def main():
     best_state = None
     print(
         f"Loaded {len(dataset):,} positions. Training on {train_size:,}; "
-        f"validating on {val_size:,}. Device={device}; torch_threads={args.torch_threads}."
+        f"validating on {val_size:,}. Included {game_positions:,} completed UI-game "
+        f"positions. Device={device}; torch_threads={args.torch_threads}."
     )
     for epoch in range(1, args.epochs + 1):
         model.train()

@@ -4,15 +4,19 @@ import json
 import os
 import sys
 import threading
+import time
+import uuid
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import az_engine
-from move_ranker import load_scripted_model, ranked_move_predictions
+from move_ranker import encode_game, load_scripted_model, ranked_move_predictions
 
 
 BOARD_SIZE = 7
@@ -22,6 +26,7 @@ VALUE_MODEL = "model/value_ranker.bin"
 TOP_K = 12
 INTERNAL_TOP_K = 0
 WORKERS = os.cpu_count() or 1
+GAME_DATA_DIR = "data/ui_games"
 
 
 class GameSession:
@@ -34,6 +39,7 @@ class GameSession:
         internal_top_k: int,
         value_model: str,
         workers: int,
+        game_data_dir: str = GAME_DATA_DIR,
     ):
         self.size = size
         self.states = states
@@ -42,6 +48,7 @@ class GameSession:
         self.internal_top_k = max(0, internal_top_k)
         self.value_model = value_model
         self.workers = max(1, workers)
+        self.game_data_dir = Path(game_data_dir) if game_data_dir else None
         self.lock = threading.Lock()
         if not Path(ranker_path).exists():
             raise FileNotFoundError(
@@ -57,14 +64,99 @@ class GameSession:
         self.mode = "engine"
         self.human_side = 1
         self.game = az_engine.Game(size)
+        self.game_id = ""
+        self.game_positions = []
         self.last_engine_info = None
         self.message = "New game."
+        self.start_recording_locked()
+
+    def start_recording_locked(self):
+        self.game_id = f"{time.time_ns()}_{uuid.uuid4().hex[:8]}"
+        self.game_positions = []
+
+    def record_move_locked(self, move: int, actor: str):
+        player = self.game.current_player()
+        before_p1 = self.game.score_p1()
+        before_p2 = self.game.score_p2()
+        return {
+            "board": encode_game(self.game),
+            "move": move,
+            "player": player,
+            "actor": actor,
+            "score_p1_before": before_p1,
+            "score_p2_before": before_p2,
+            "value_evaluation": int(self.value_evaluator.evaluate(self.game, player)),
+            "heuristic_evaluation": int(self.heuristic_evaluator.evaluate(self.game, player)),
+        }
+
+    def save_game_locked(self):
+        if self.game_data_dir is None or not self.game_positions:
+            return
+        self.game_data_dir.mkdir(parents=True, exist_ok=True)
+        completed = self.game.is_over()
+        final_p1 = self.game.score_p1()
+        final_p2 = self.game.score_p2()
+        winner = self.game.winner() if completed else 0
+        outcome_targets = np.full(len(self.game_positions), np.nan, dtype=np.float32)
+        if completed:
+            for index, position in enumerate(self.game_positions):
+                difference = final_p1 - final_p2
+                if position["player"] == 2:
+                    difference = -difference
+                outcome_targets[index] = np.tanh(difference / 5.0)
+        path = self.game_data_dir / f"game_{self.game_id}.npz"
+        np.savez_compressed(
+            path,
+            boards=np.stack([item["board"] for item in self.game_positions]),
+            moves=np.asarray([item["move"] for item in self.game_positions], dtype=np.int16),
+            players=np.asarray([item["player"] for item in self.game_positions], dtype=np.int8),
+            actors=np.asarray([item["actor"] for item in self.game_positions]),
+            score_p1_before=np.asarray(
+                [item["score_p1_before"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            score_p2_before=np.asarray(
+                [item["score_p2_before"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            score_p1_after=np.asarray(
+                [item["score_p1_after"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            score_p2_after=np.asarray(
+                [item["score_p2_after"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            value_evaluations=np.asarray(
+                [item["value_evaluation"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            heuristic_evaluations=np.asarray(
+                [item["heuristic_evaluation"] for item in self.game_positions],
+                dtype=np.int16,
+            ),
+            outcome_targets=outcome_targets,
+            completed=np.asarray([completed], dtype=np.bool_),
+            winner=np.asarray([winner], dtype=np.int8),
+            final_score_p1=np.asarray([final_p1], dtype=np.int16),
+            final_score_p2=np.asarray([final_p2], dtype=np.int16),
+            mode=np.asarray([self.mode]),
+            human_side=np.asarray([self.human_side], dtype=np.int8),
+        )
+
+    def finish_recorded_move_locked(self, position: dict):
+        position["score_p1_after"] = self.game.score_p1()
+        position["score_p2_after"] = self.game.score_p2()
+        self.game_positions.append(position)
+        self.save_game_locked()
 
     def reset(self, mode: str, human_side: int):
         with self.lock:
+            self.save_game_locked()
             self.mode = "pvp" if mode == "pvp" else "engine"
             self.human_side = 2 if human_side == 2 else 1
             self.game = az_engine.Game(self.size)
+            self.start_recording_locked()
             self.last_engine_info = None
             self.message = "New game."
             return self.state_locked()
@@ -72,6 +164,103 @@ class GameSession:
     def state(self):
         with self.lock:
             return self.state_locked()
+
+    def archive(self):
+        with self.lock:
+            self.save_game_locked()
+            if self.game_data_dir is None or not self.game_data_dir.exists():
+                return {"games": [], "current_game_id": self.game_id if self.game_positions else None}
+            games = []
+            for path in sorted(self.game_data_dir.glob("game_*.npz"), reverse=True):
+                try:
+                    with np.load(path) as game:
+                        moves = int(game["moves"].shape[0])
+                        games.append(
+                            {
+                                "id": path.stem.removeprefix("game_"),
+                                "moves": moves,
+                                "completed": bool(game["completed"][0]),
+                                "winner": int(game["winner"][0]),
+                                "score_p1": int(game["final_score_p1"][0]),
+                                "score_p2": int(game["final_score_p2"][0]),
+                                "mode": str(game["mode"][0]),
+                            }
+                        )
+                except (KeyError, OSError, ValueError):
+                    continue
+            return {
+                "games": games,
+                "current_game_id": self.game_id if self.game_positions else None,
+            }
+
+    def archived_game(self, game_id: str):
+        with self.lock:
+            if self.game_data_dir is None:
+                raise FileNotFoundError("Game recording is disabled.")
+            if not game_id or any(character not in "0123456789abcdef_" for character in game_id):
+                raise ValueError("Invalid archived game id.")
+            path = self.game_data_dir / f"game_{game_id}.npz"
+            if not path.exists():
+                raise FileNotFoundError(f"Missing archived game: {game_id}")
+            with np.load(path) as game:
+                boards = game["boards"]
+                moves = game["moves"]
+                players = game["players"]
+                actors = game["actors"]
+                score_p1_after = game["score_p1_after"]
+                score_p2_after = game["score_p2_after"]
+                value_evaluations = game["value_evaluations"]
+                heuristic_evaluations = game["heuristic_evaluations"]
+                frames = [
+                    {
+                        "ply": 0,
+                        "stones": boards[0, 0].astype(np.uint8).reshape(-1).tolist(),
+                        "territories": np.where(
+                            boards[0, 2],
+                            1,
+                            np.where(boards[0, 3], 2, 0),
+                        ).astype(np.uint8).reshape(-1).tolist(),
+                        "current_player": int(players[0]),
+                        "move": None,
+                        "actor": None,
+                        "score_p1": int(game["score_p1_before"][0]),
+                        "score_p2": int(game["score_p2_before"][0]),
+                        "value_evaluation": int(value_evaluations[0]),
+                        "heuristic_evaluation": int(heuristic_evaluations[0]),
+                    }
+                ]
+                replay = az_engine.Game(self.size)
+                for index, move in enumerate(moves):
+                    move = int(move)
+                    if replay.apply(move) != 0:
+                        raise RuntimeError(f"Archived game contains illegal move {move}.")
+                    current_player = replay.current_player()
+                    frames.append(
+                        {
+                            "ply": index + 1,
+                            "stones": list(replay.stones()),
+                            "territories": list(replay.territories()),
+                            "current_player": current_player,
+                            "move": move,
+                            "actor": str(actors[index]),
+                            "score_p1": int(score_p1_after[index]),
+                            "score_p2": int(score_p2_after[index]),
+                            "value_evaluation": int(
+                                self.value_evaluator.evaluate(replay, current_player)
+                            ),
+                            "heuristic_evaluation": int(
+                                self.heuristic_evaluator.evaluate(replay, current_player)
+                            ),
+                        }
+                    )
+                return {
+                    "id": game_id,
+                    "completed": bool(game["completed"][0]),
+                    "winner": int(game["winner"][0]),
+                    "score_p1": int(game["final_score_p1"][0]),
+                    "score_p2": int(game["final_score_p2"][0]),
+                    "frames": frames,
+                }
 
     def state_locked(self):
         winner = self.game.winner() if self.game.is_over() else None
@@ -106,10 +295,12 @@ class GameSession:
                 self.message = "It is the engine's turn."
                 return self.state_locked()
 
+            position = self.record_move_locked(move, "human")
             result = self.game.apply(move)
             if result != 0:
                 self.message = "Illegal move."
                 return self.state_locked()
+            self.finish_recorded_move_locked(position)
 
             x = move % self.size + 1
             y = move // self.size + 1
@@ -222,10 +413,12 @@ class GameSession:
                 }
                 return self.state_locked()
 
+            position = self.record_move_locked(move, "engine")
             result = self.game.apply(move)
             if result != 0:
                 self.message = "Engine selected an illegal move."
                 return self.state_locked()
+            self.finish_recorded_move_locked(position)
 
             self.last_engine_info = {
                 "move": move,
@@ -274,6 +467,12 @@ def make_handler(session: GameSession, ui_dir: Path):
             try:
                 if path == "/api/state":
                     write_json(self, session.state())
+                    return
+                if path == "/api/archive":
+                    write_json(self, session.archive())
+                    return
+                if path.startswith("/api/archive/"):
+                    write_json(self, session.archived_game(path.removeprefix("/api/archive/")))
                     return
                 if path == "/":
                     self.path = "/index.html"
@@ -325,6 +524,7 @@ def main():
     )
     parser.add_argument("--workers", type=int, default=WORKERS)
     parser.add_argument("--value-model", default=VALUE_MODEL)
+    parser.add_argument("--game-data-dir", default=GAME_DATA_DIR)
     args = parser.parse_args()
     if args.board_size != BOARD_SIZE:
         raise SystemExit(
@@ -342,6 +542,7 @@ def main():
         args.internal_top_k,
         args.value_model,
         max(1, args.workers),
+        args.game_data_dir,
     )
     server = ThreadingHTTPServer((args.host, args.port), make_handler(session, ui_dir))
     print(f"BlitzGo UI: http://{args.host}:{args.port}")
@@ -349,7 +550,8 @@ def main():
         f"Engine: top-{args.top_k}, internal_top_k={max(0, args.internal_top_k)}, "
         f"states={args.states:,}, "
         f"workers={max(1, args.workers)}, ranker={args.ranker}, "
-        f"value_model={args.value_model or 'heuristic'}"
+        f"value_model={args.value_model or 'heuristic'}, "
+        f"game_data_dir={args.game_data_dir or 'disabled'}"
     )
     server.serve_forever()
 

@@ -157,6 +157,7 @@
         font-size: 13px;
       }
       select,
+      input,
       button {
         font: inherit;
         border-radius: 12px;
@@ -176,6 +177,28 @@
       button:disabled {
         cursor: wait;
         opacity: 0.6;
+      }
+      .playback {
+        display: grid;
+        gap: 8px;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #34302b;
+      }
+      .playback-controls {
+        display: grid;
+        grid-template-columns: 44px 44px 44px 1fr;
+        gap: 8px;
+        align-items: center;
+      }
+      .playback-controls button {
+        min-height: 40px;
+        padding: 8px;
+      }
+      .playback-meta {
+        color: var(--muted);
+        font-size: 13px;
+        min-height: 18px;
       }
       .stats {
         display: grid;
@@ -282,6 +305,21 @@
           <button class="primary" id="newGame">New Game</button>
           <button id="engineMove">Engine Move</button>
         </div>
+        <div class="playback">
+          <label>
+            Game archive
+            <select id="archive">
+              <option value="">Live game</option>
+            </select>
+          </label>
+          <div class="playback-controls">
+            <button id="previousFrame" title="Previous move" aria-label="Previous move">|&lt;</button>
+            <button id="togglePlayback" title="Play or pause" aria-label="Play or pause">Play</button>
+            <button id="nextFrame" title="Next move" aria-label="Next move">&gt;|</button>
+            <input id="timeline" type="range" min="0" max="0" value="0" aria-label="Playback position" />
+          </div>
+          <div class="playback-meta" id="playbackMeta">Live game</div>
+        </div>
         <div class="stats">
           <div>Turn: <strong id="turn">-</strong></div>
           <div>Territory: <strong id="score">-</strong></div>
@@ -310,12 +348,22 @@
     <script>
       let state = null;
       let busy = false;
+      let archivedGame = null;
+      let playbackIndex = 0;
+      let playbackTimer = null;
+      let reviewingLiveGame = false;
 
       const board = document.querySelector("#board");
       const mode = document.querySelector("#mode");
       const side = document.querySelector("#side");
       const newGame = document.querySelector("#newGame");
       const engineMove = document.querySelector("#engineMove");
+      const archive = document.querySelector("#archive");
+      const previousFrame = document.querySelector("#previousFrame");
+      const togglePlayback = document.querySelector("#togglePlayback");
+      const nextFrame = document.querySelector("#nextFrame");
+      const timeline = document.querySelector("#timeline");
+      const playbackMeta = document.querySelector("#playbackMeta");
       const turn = document.querySelector("#turn");
       const score = document.querySelector("#score");
       const valueEvaluation = document.querySelector("#valueEvaluation");
@@ -333,6 +381,97 @@
 
       function currentMinimax(data) {
         return data?.last_engine_info?.minimax_ranked || [];
+      }
+
+      function stopPlayback() {
+        if (playbackTimer) clearInterval(playbackTimer);
+        playbackTimer = null;
+        togglePlayback.textContent = "Play";
+        updatePlaybackControls();
+      }
+
+      function updatePlaybackControls() {
+        const hasReplay = Boolean(archivedGame?.frames?.length);
+        previousFrame.disabled = hasReplay && playbackIndex <= 0;
+        togglePlayback.disabled = !hasReplay;
+        nextFrame.disabled = !hasReplay || playbackIndex >= archivedGame.frames.length - 1;
+        timeline.disabled = !hasReplay;
+      }
+
+      function playbackFrame() {
+        return archivedGame?.frames?.[playbackIndex] || null;
+      }
+
+      function renderPlaybackFrame() {
+        const frame = playbackFrame();
+        if (!frame) return;
+        render({
+          ...state,
+          stones: frame.stones,
+          territories: frame.territories,
+          current_player: frame.current_player,
+          score_p1: frame.score_p1,
+          score_p2: frame.score_p2,
+          value_evaluation: frame.value_evaluation,
+          heuristic_evaluation: frame.heuristic_evaluation,
+          last_engine_info: null,
+          cnn_top_k: [],
+          is_over: archivedGame.completed && playbackIndex === archivedGame.frames.length - 1,
+          winner: archivedGame.winner,
+          message: frame.move === null
+            ? "Archived game start."
+            : `${frame.actor === "engine" ? "Engine" : "Human"} played (${(frame.move % state.size) + 1}, ${Math.floor(frame.move / state.size) + 1}).`,
+        });
+        timeline.value = playbackIndex;
+        playbackMeta.textContent = `Move ${playbackIndex} / ${archivedGame.frames.length - 1}`;
+        updatePlaybackControls();
+      }
+
+      function seekPlayback(index) {
+        if (!archivedGame) return;
+        playbackIndex = Math.max(0, Math.min(index, archivedGame.frames.length - 1));
+        renderPlaybackFrame();
+        if (playbackIndex === archivedGame.frames.length - 1) {
+          stopPlayback();
+          if (reviewingLiveGame) {
+            archivedGame = null;
+            reviewingLiveGame = false;
+            timeline.max = 0;
+            timeline.value = 0;
+            playbackMeta.textContent = "Live game";
+            updatePlaybackControls();
+          }
+        }
+      }
+
+      async function loadArchive(selectedId = archive.value) {
+        const data = await api("/api/archive");
+        archive.innerHTML = '<option value="">Live game</option>';
+        for (const game of data.games) {
+          const option = document.createElement("option");
+          option.value = game.id;
+          option.textContent = `${game.completed ? "Finished" : "In progress"} · ${game.moves} moves · P1 ${game.score_p1} / P2 ${game.score_p2}`;
+          archive.appendChild(option);
+        }
+        archive.value = selectedId;
+        updatePlaybackControls();
+      }
+
+      async function ensureLiveReplay() {
+        if (archivedGame) return true;
+        const data = await api("/api/archive");
+        if (!data.current_game_id) return false;
+        archivedGame = await api(`/api/archive/${data.current_game_id}`);
+        reviewingLiveGame = true;
+        playbackIndex = archivedGame.frames.length - 1;
+        timeline.max = playbackIndex;
+        updatePlaybackControls();
+        return archivedGame.frames.length > 1;
+      }
+
+      async function stepPlayback(delta) {
+        if (!archivedGame && !(await ensureLiveReplay())) return;
+        seekPlayback(playbackIndex + delta);
       }
 
       function renderTopK(picks) {
@@ -472,6 +611,7 @@
         renderMinimax(minimaxRows);
         engineMove.disabled =
           busy ||
+          Boolean(archivedGame) ||
           data.is_over ||
           data.mode !== "engine" ||
           data.current_player === data.human_side;
@@ -487,8 +627,51 @@
         render(await api("/api/state"));
       }
 
+      archive.addEventListener("change", async () => {
+        stopPlayback();
+        if (!archive.value) {
+          archivedGame = null;
+          reviewingLiveGame = false;
+          playbackIndex = 0;
+          timeline.max = 0;
+          timeline.value = 0;
+          playbackMeta.textContent = "Live game";
+          updatePlaybackControls();
+          await refresh();
+          return;
+        }
+        archivedGame = await api(`/api/archive/${archive.value}`);
+        reviewingLiveGame = false;
+        playbackIndex = 0;
+        timeline.max = archivedGame.frames.length - 1;
+        renderPlaybackFrame();
+      });
+      previousFrame.addEventListener("click", () => stepPlayback(-1));
+      nextFrame.addEventListener("click", () => stepPlayback(1));
+      timeline.addEventListener("input", () => seekPlayback(Number(timeline.value)));
+      togglePlayback.addEventListener("click", () => {
+        if (!archivedGame) return;
+        if (playbackTimer) {
+          stopPlayback();
+          return;
+        }
+        if (playbackIndex === archivedGame.frames.length - 1) playbackIndex = 0;
+        togglePlayback.textContent = "Pause";
+        playbackTimer = setInterval(() => seekPlayback(playbackIndex + 1), 700);
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.target.matches("select, input")) return;
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          stepPlayback(-1);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          stepPlayback(1);
+        }
+      });
+
       async function playMove(move) {
-        if (busy || !state || state.is_over) return;
+        if (busy || archivedGame || !state || state.is_over) return;
         busy = true;
         render(state);
         try {
@@ -503,6 +686,7 @@
             message.textContent = "Engine thinking...";
             render(await api("/api/engine", {}));
           }
+          await loadArchive();
         } catch (err) {
           message.textContent = err.message;
         } finally {
@@ -512,7 +696,7 @@
       }
 
       async function requestEngineMove() {
-        if (busy) return;
+        if (busy || archivedGame) return;
         busy = true;
         render(state);
         try {
@@ -520,6 +704,7 @@
           await previewTopK();
           message.textContent = "Engine thinking...";
           render(await api("/api/engine", {}));
+          await loadArchive();
         } catch (err) {
           message.textContent = err.message;
         } finally {
@@ -529,6 +714,7 @@
       }
 
       newGame.addEventListener("click", async () => {
+        if (archivedGame) return;
         busy = true;
         try {
           render(
@@ -537,6 +723,7 @@
               human_side: Number(side.value),
             }),
           );
+          await loadArchive();
           if (
             state.mode === "engine" &&
             state.current_player !== state.human_side
@@ -555,11 +742,12 @@
       });
 
       engineMove.addEventListener("click", requestEngineMove);
+      updatePlaybackControls();
       if (location.protocol === "file:") {
         message.textContent =
           "Start the server with: python3 py/ui_server.py, then open http://127.0.0.1:8000";
       } else {
-        refresh().catch((err) => {
+        Promise.all([refresh(), loadArchive()]).catch((err) => {
           message.textContent = err.message;
         });
       }
