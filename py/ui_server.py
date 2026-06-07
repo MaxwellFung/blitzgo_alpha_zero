@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import az_engine
-from move_ranker import encode_game, load_scripted_model, ranked_move_predictions
+from training.move_ranker import encode_game, load_scripted_model, ranked_move_predictions
 
 
 BOARD_SIZE = 7
@@ -54,7 +54,7 @@ class GameSession:
             raise FileNotFoundError(
                 f"Missing 7x7 ranker model: {ranker_path}. "
                 "Generate data with `python3 py/generate_training_data.py`, then train with "
-                "`python3 py/train_move_ranker.py`."
+                "`python3 training/train_move_ranker.py`."
             )
         if value_model and not Path(value_model).exists():
             raise FileNotFoundError(f"Missing native value model: {value_model}")

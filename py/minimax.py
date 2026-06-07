@@ -92,13 +92,13 @@ def play_minimax(
     value_model: str,
     workers: int,
 ):
-    from move_ranker import load_scripted_model, ranked_moves
+    from training.move_ranker import load_scripted_model, ranked_moves
 
     if not Path(ranker_model).exists():
         raise FileNotFoundError(
             f"Missing 7x7 ranker model: {ranker_model}. "
             "Generate data with `python3 py/generate_training_data.py`, then train with "
-            "`python3 py/train_move_ranker.py`."
+            "`python3 training/train_move_ranker.py`."
         )
     if value_model and not Path(value_model).exists():
         raise FileNotFoundError(f"Missing native value model: {value_model}")
