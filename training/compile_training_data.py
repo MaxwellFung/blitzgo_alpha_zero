@@ -34,6 +34,10 @@ def confirm_proceed() -> bool:
     return answer in {"y", "yes"}
 
 
+def is_cnn_shard(path: Path) -> bool:
+    return path.stem.startswith("shard_cnn")
+
+
 def load_move_shards(data_dir: Path):
     paths = sorted(data_dir.glob("shard_*.npz"))
     if not paths:
@@ -59,6 +63,23 @@ def load_move_shards(data_dir: Path):
     else:
         completed_depths = np.zeros(len(boards), dtype=np.int16)
     return paths, boards, legal_masks, move_scores, completed_depths
+
+
+def source_position_counts(paths: list[Path]) -> tuple[int, int, int, int]:
+    regular_shards = 0
+    regular_positions = 0
+    cnn_shards = 0
+    cnn_positions = 0
+    for path in paths:
+        with np.load(path) as shard:
+            positions = len(shard["boards"])
+        if is_cnn_shard(path):
+            cnn_shards += 1
+            cnn_positions += positions
+        else:
+            regular_shards += 1
+            regular_positions += positions
+    return regular_shards, regular_positions, cnn_shards, cnn_positions
 
 
 def load_completed_game_values(game_data_dir: Path):
@@ -120,6 +141,7 @@ def main():
     compress = not args.no_compress
 
     paths, boards, legal_masks, move_scores, completed_depths = load_move_shards(args.data_dir)
+    regular_shards, regular_positions, cnn_shards, cnn_positions = source_position_counts(paths)
     masked_scores = np.where(legal_masks, move_scores, ILLEGAL_SCORE)
     best_scores = masked_scores.max(axis=1).astype(np.float32)
     best_moves = masked_scores.argmax(axis=1).astype(np.int16)
@@ -152,9 +174,15 @@ def main():
     value_bytes = value_boards.nbytes + value_targets.nbytes
     print("\nDataset summary")
     print(f"  Source move shards: {len(paths):,}")
+    print(f"    Regular shard files: {regular_shards:,}")
+    print(f"    Merged CNN shard files: {cnn_shards:,}")
     print(f"  Policy positions: {len(boards):,}")
+    print(f"    Regular shard policy positions: {regular_positions:,}")
+    print(f"    Merged CNN policy positions: {cnn_positions:,}")
     print(f"  Value positions: {len(value_boards):,}")
     print(f"    Self-play minimax value positions: {self_play_value_positions:,}")
+    print(f"      Regular shard value positions: {regular_positions:,}")
+    print(f"      Merged CNN shard value positions: {cnn_positions:,}")
     print(f"    Completed UI-game value positions: {ui_game_value_positions:,}")
     print(f"  Policy output: {policy_output}")
     print(f"  Value output: {value_output}")
@@ -186,6 +214,8 @@ def main():
         completed_depths=completed_depths,
         best_moves=best_moves,
         best_scores=best_scores,
+        regular_shard_positions=np.asarray([regular_positions], dtype=np.int64),
+        cnn_shard_positions=np.asarray([cnn_positions], dtype=np.int64),
         source_shards=source_shards,
     )
 
@@ -197,6 +227,8 @@ def main():
         targets=value_targets,
         self_play_positions=np.asarray([self_play_value_positions], dtype=np.int64),
         ui_game_positions=np.asarray([ui_game_value_positions], dtype=np.int64),
+        regular_shard_positions=np.asarray([regular_positions], dtype=np.int64),
+        cnn_shard_positions=np.asarray([cnn_positions], dtype=np.int64),
         source_shards=source_shards,
     )
     print(
