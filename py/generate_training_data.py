@@ -34,7 +34,7 @@ ACTION_SIZE = BOARD_SIZE * BOARD_SIZE
 ILLEGAL_SCORE = np.iinfo(np.int16).min
 PROGRESS_QUEUE = None
 VALUE_MODEL = ""
-SAMPLES_PER_SHARD = 5000
+SAMPLES_PER_SHARD = 1000
 
 
 def initialize_worker(progress_queue):
@@ -235,7 +235,7 @@ def next_shard_id(output_dir: Path) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description="Generate pure minimax self-play move-ranking data.")
-    parser.add_argument("--samples", type=int, default=50_000)
+    parser.add_argument("--samples", type=int, default=1_000_000)
     parser.add_argument(
         "--samples-per-shard",
         type=int,

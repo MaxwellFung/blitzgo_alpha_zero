@@ -70,7 +70,7 @@ def main():
     parser.add_argument("--game-data-dir", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=Path("model/value_ranker.bin"))
     parser.add_argument("--torchscript-output", type=Path, default=Path("model/value_ranker.ts"))
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
